@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from typing import List, Literal, Union, Optional, Dict, Any
+from typing import List, Literal, Union, Optional, Dict, Any, cast
 from openai import OpenAI  # type: ignore
 import os
 from dotenv import load_dotenv
@@ -15,6 +15,8 @@ from contextlib import contextmanager
 import uuid
 from datetime import datetime
 from utils.web_utils import extract_website_content as extract_content, extract_website_with_subpages
+import time
+import tempfile
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -41,25 +43,14 @@ if not api_key:
     logger.error("OpenAI API key not found in environment variables")
     raise ValueError("OpenAI API key not found in environment variables")
 
-# Initialize OpenAI client with the latest method
+# Initialize OpenAI client with better error handling
 try:
-    if api_key.startswith("sk-dummy"):
-        # Mock mode for testing without real API calls
-        logger.warning("Using dummy API key. API calls will fail, but server will start for testing.")
-        client = OpenAI(api_key=api_key)  # type: ignore
-    else:
-        client = OpenAI(api_key=api_key)  # type: ignore
-        logger.info("OpenAI client initialized successfully")
-except TypeError as e:
-    # Handle the 'proxies' keyword argument error
-    if "unexpected keyword argument 'proxies'" in str(e):
-        logger.warning("Detected OpenAI client compatibility issue. Using alternative initialization.")
-        # Try with minimal parameters
-        client = OpenAI(api_key=api_key)
-        logger.info("OpenAI client initialized successfully with alternative method")
-    else:
-        # Re-raise if it's a different TypeError
-        raise
+    # Create the client with only the required parameters
+    client = OpenAI(api_key=api_key)
+    logger.info("OpenAI client initialized successfully")
+except Exception as e:
+    logger.error(f"Error initializing OpenAI client: {str(e)}")
+    raise
 
 # Database setup
 DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./custom_models.db")
@@ -240,173 +231,256 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 async def chat_with_custom_model(request: ChatRequest):
-    """Use a custom model for chat completion"""
+    """Chat with a custom model based on its configuration"""
     try:
-        # Get custom model from database
+        model_id = request.model_id
+        if not model_id:
+            raise HTTPException(status_code=400, detail="Model ID is required")
+        
+        # Get the model from the database
         with get_db() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM custom_models WHERE id = ?", (request.model_id,))
-            model_data = cursor.fetchone()
+            cursor.execute("SELECT * FROM custom_models WHERE id = ?", (model_id,))
+            model = cursor.fetchone()
             
-            if not model_data:
-                raise HTTPException(status_code=404, detail=f"Custom model with id {request.model_id} not found")
+            if not model:
+                raise HTTPException(status_code=404, detail=f"Custom model with id {model_id} not found")
             
-            # Parse model config
-            config = json.loads(model_data["config"])
-            model_type = model_data["model_type"]
-            
-            # Get any associated files
-            cursor.execute("SELECT * FROM model_files WHERE model_id = ?", (request.model_id,))
-            file_data = cursor.fetchall()
-            file_ids = [file["file_id"] for file in file_data] if file_data else []
+            model_type = model["model_type"]
+            model_config = json.loads(model["config"])
+            assistant_id = model["assistant_id"]
         
-        if model_type == "assistant":
-            # Use OpenAI Assistant API
-            assistant_id = model_data["assistant_id"]
-            
-            # Create a thread
-            thread = client.beta.threads.create()
-            
-            # Add user messages to thread
-            for msg in request.messages:
-                if msg.role == "user":
-                    client.beta.threads.messages.create(
-                        thread_id=thread.id,
-                        role="user",
-                        content=msg.content
-                    )
-            
-            # Run assistant on thread
-            run = client.beta.threads.runs.create(
-                thread_id=thread.id,
-                assistant_id=assistant_id
-            )
-            
-            # Wait for completion
-            while run.status in ["queued", "in_progress"]:
-                run = client.beta.threads.runs.retrieve(
-                    thread_id=thread.id,
-                    run_id=run.id
-                )
-            
-            if run.status != "completed":
-                raise HTTPException(status_code=500, detail="Assistant run failed")
-            
-            # Get messages
-            messages = client.beta.threads.messages.list(thread_id=thread.id)
-            
-            # Return the last assistant message
-            for msg in reversed(messages.data):
-                if msg.role == "assistant":
-                    return {
-                        "message": safely_extract_assistant_text(msg.content),
-                        "role": "assistant"
-                    }
-            
-            raise HTTPException(status_code=500, detail="No assistant response found")
-            
-        else:  # gpt or fine-tuned
-            # Create system message from model instructions
-            system_message = {
-                "role": "system",
-                "content": config.get("instructions", f"You are a helpful AI assistant specialized in {request.purpose}.")
-            }
-            
-            # Add website context if available
-            if config.get("website_content"):
-                system_message["content"] += f"\n\nReference website content: {config.get('website_content')}"
-            
-            # Convert messages to OpenAI format
-            messages = [system_message] + [convert_to_openai_message(msg) for msg in request.messages]
-            
-            # Get model to use (default to gpt-4o if not specified)
-            model_name = config.get("model", "gpt-4o-mini")
-            
-            # Call OpenAI API
-            response = client.chat.completions.create(
-                model=model_name,
-                messages=messages,  # type: ignore
-                temperature=config.get("temperature", 0.7),
-                max_tokens=config.get("max_tokens", 500),
-                response_format={"type": "text"}
-            )
-            
-            if not response.choices:
-                raise ValueError("No response choices received from OpenAI")
+        # Handle different model types
+        if model_type == "assistant" and assistant_id:
+            # For assistant models, use OpenAI Assistants API
+            try:
+                # Create a thread if needed
+                thread = client.beta.threads.create()
                 
-            return {
-                "message": response.choices[0].message.content,
-                "role": "assistant"
-            }
+                # Add messages to the thread
+                for message in request.messages:
+                    if message.role == "user":
+                        client.beta.threads.messages.create(
+                            thread_id=thread.id,
+                            role="user",
+                            content=message.content
+                        )
+                
+                # Run the assistant
+                run = client.beta.threads.runs.create(
+                    thread_id=thread.id,
+                    assistant_id=assistant_id
+                )
+                
+                # Wait for the run to complete (with timeout)
+                max_wait_time = 60  # seconds
+                wait_time = 0
+                sleep_interval = 2
+                
+                while wait_time < max_wait_time:
+                    run_status = client.beta.threads.runs.retrieve(
+                        thread_id=thread.id,
+                        run_id=run.id
+                    )
+                    
+                    if run_status.status == "completed":
+                        break
+                    elif run_status.status in ["failed", "cancelled", "expired"]:
+                        raise HTTPException(
+                            status_code=500, 
+                            detail=f"Assistant run failed with status: {run_status.status}"
+                        )
+                    
+                    time.sleep(sleep_interval)
+                    wait_time += sleep_interval
+                
+                if wait_time >= max_wait_time:
+                    # Cancel the run if it's taking too long
+                    client.beta.threads.runs.cancel(
+                        thread_id=thread.id,
+                        run_id=run.id
+                    )
+                    raise HTTPException(
+                        status_code=500, 
+                        detail="Assistant run timed out after 60 seconds"
+                    )
+                
+                # Get messages from the thread
+                messages = client.beta.threads.messages.list(
+                    thread_id=thread.id
+                )
+                
+                # Find the most recent assistant message
+                assistant_messages = [
+                    m for m in messages.data 
+                    if m.role == "assistant"
+                ]
+                
+                if not assistant_messages:
+                    return {"message": "No response from the assistant"}
+                
+                # Get the latest message content
+                latest_message = assistant_messages[0]
+                response_text = safely_extract_assistant_text(latest_message.content)
+                
+                return {"message": response_text}
+                
+            except Exception as e:
+                logger.error(f"Error using assistant API: {str(e)}")
+                logger.error(traceback.format_exc())
+                raise HTTPException(status_code=500, detail=f"Error with assistant model: {str(e)}")
+        
+        else:
+            # For GPT models, use chat completions API
+            try:
+                # Prepare messages with system prompt from model config
+                system_content = model_config.get("instructions", "")
+                
+                # Add context from website content if available
+                website_content = model_config.get("website_content", "")
+                if website_content:
+                    system_content += f"\n\nRefer to this website content when relevant:\n{website_content}"
+                
+                # Create properly typed messages for the API
+                from openai.types.chat import ChatCompletionSystemMessageParam, ChatCompletionUserMessageParam
+                from typing import List, cast, Union
+                
+                # Start with a properly typed list
+                messages_for_api: List[Union[ChatCompletionSystemMessageParam, ChatCompletionUserMessageParam]] = []
+                
+                # Add system message
+                messages_for_api.append(ChatCompletionSystemMessageParam(
+                    role="system", 
+                    content=system_content
+                ))
+                
+                # Add user messages
+                for message in request.messages:
+                    messages_for_api.append(ChatCompletionUserMessageParam(
+                        role="user",
+                        content=message.content
+                    ))
+                
+                # Make the API call
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",  # Default model
+                    messages=messages_for_api,
+                    temperature=0.7,
+                )
+                
+                return {"message": response.choices[0].message.content}
+                
+            except Exception as e:
+                logger.error(f"Error using GPT model: {str(e)}")
+                logger.error(traceback.format_exc())
+                raise HTTPException(status_code=500, detail=f"Error with GPT model: {str(e)}")
     
     except Exception as e:
-        logger.error(f"Error in custom model chat: {str(e)}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
+        logger.error(f"Error in chat_with_custom_model: {str(e)}")
+        logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/custom_models", response_model=CustomModelResponse)
-async def create_custom_model(model: CustomModelCreate):
-    """Create a new custom GPT model"""
-    try:
-        model_id = str(uuid.uuid4())
-        now = datetime.utcnow().isoformat()
-        
-        # Create config JSON
-        config = {
-            "instructions": model.instructions,
-            "temperature": 0.7,
-            "max_tokens": 500,
-            "model": "gpt-4o-mini"
-        }
-        
-        # Add website info if provided
-        if model.website_url:
-            config["website_url"] = model.website_url
-        if model.website_content:
-            config["website_content"] = model.website_content
-        
-        assistant_id = None
-        vector_store_id = None
-        
-        # If model type is "assistant", create an OpenAI Assistant
-        if model.model_type == "assistant":
-            # Create a vector store for the assistant
-            vector_store = client.vector_stores.create(name=f"{model.name} Vector Store")
-            vector_store_id = vector_store.id
-
+async def create_custom_model(model: CustomModelCreate) -> CustomModelResponse:
+    """Create a custom model based on the provided configuration"""
+    logger.info(f"Creating custom model: {model.name} ({model.model_type})")
+    
+    model_id = str(uuid.uuid4())
+    now = datetime.now().isoformat()
+    
+    # Prepare config JSON
+    config = {
+        "instructions": model.instructions,
+        "website_content": model.website_content or ""
+    }
+    
+    # For assistant type, create an assistant via the API
+    assistant_id = None
+    vector_store_id = None
+    
+    if model.model_type == "assistant":
+        try:
+            logger.info("Creating assistant via OpenAI API")
+            
+            # Create assistant
             assistant = client.beta.assistants.create(
                 name=model.name,
-                description=model.description,
                 instructions=model.instructions,
                 model=os.getenv("OPENAI_ASSISTANT_MODEL", "gpt-4o"),
-                tools=[{"type": "file_search"}],
-                tool_resources={"file_search": {"vector_store_ids": [vector_store_id]}}
+                description=model.description,
+                tools=[{"type": "retrieval"}]
             )
+            
             assistant_id = assistant.id
-        
-        # Save model to database
-        with get_db() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "INSERT INTO custom_models (id, name, description, model_type, assistant_id, vector_store_id, config, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (model_id, model.name, model.description, model.model_type, assistant_id, vector_store_id, json.dumps(config), now, now)
+            logger.info(f"Created assistant with ID: {assistant_id}")
+            
+            # If website content is provided, create a file for the assistant
+            if model.website_content:
+                # We don't use vector_stores in the current OpenAI API version
+                # Instead, we'll upload the content as a file for the assistant
+                try:
+                    # Create a temporary file with the website content
+                    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as temp:
+                        temp.write(model.website_content)
+                        temp_path = temp.name
+                    
+                    # Upload the file to OpenAI
+                    with open(temp_path, 'rb') as file:
+                        file_upload = client.files.create(
+                            file=file,
+                            purpose="assistants"
+                        )
+                    
+                    # Attach the file to the assistant
+                    client.beta.assistants.files.create(
+                        assistant_id=assistant_id,
+                        file_id=file_upload.id
+                    )
+                    
+                    # Clean up temporary file
+                    os.unlink(temp_path)
+                    
+                    logger.info(f"Uploaded website content to assistant as file: {file_upload.id}")
+                except Exception as e:
+                    logger.error(f"Error uploading website content: {str(e)}")
+                    logger.error(traceback.format_exc())
+                
+        except Exception as e:
+            logger.error(f"Error creating assistant: {str(e)}")
+            logger.error(traceback.format_exc())
+            raise HTTPException(status_code=500, detail=f"Error creating assistant: {str(e)}")
+    
+    # Store model in database
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            '''
+            INSERT INTO custom_models (id, name, description, model_type, assistant_id, vector_store_id, config, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                model_id, 
+                model.name, 
+                model.description, 
+                model.model_type,
+                assistant_id,
+                vector_store_id,
+                json.dumps(config),
+                now,
+                now
             )
-            conn.commit()
-        
-        return {
-            "id": model_id,
-            "name": model.name,
-            "description": model.description,
-            "model_type": model.model_type,
-            "instructions": model.instructions,
-            "created_at": now,
-            "updated_at": now
-        }
-        
-    except Exception as e:
-        logger.error(f"Error creating custom model: {str(e)}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+        )
+        conn.commit()
+    
+    return CustomModelResponse(
+        id=model_id,
+        name=model.name,
+        description=model.description,
+        model_type=model.model_type,
+        instructions=model.instructions,
+        created_at=now,
+        updated_at=now
+    )
 
 @app.get("/api/custom_models", response_model=List[CustomModelResponse])
 async def list_custom_models():
@@ -465,13 +539,14 @@ async def get_custom_model(model_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/custom_models/{model_id}/files")
-async def add_file_to_model(
+async def upload_file_to_model(
     model_id: str,
     file: UploadFile = File(...),
 ):
-    """Add a file to a custom model for retrieval"""
+    """Upload a file to an assistant model"""
+    temp_file_path = None
     try:
-        # Check if model exists
+        # Check if model exists and is assistant type
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM custom_models WHERE id = ?", (model_id,))
@@ -480,63 +555,78 @@ async def add_file_to_model(
             if not model:
                 raise HTTPException(status_code=404, detail=f"Custom model with id {model_id} not found")
             
-            assistant_id = model["assistant_id"]
-            vector_store_id = model["vector_store_id"]
-            
             if model["model_type"] != "assistant":
-                raise HTTPException(status_code=400, detail="Files can only be added to assistant-type models")
+                raise HTTPException(status_code=400, detail="File uploads are only supported for assistant models")
             
-            if not assistant_id or not vector_store_id:
-                raise HTTPException(status_code=400, detail="Assistant ID or Vector Store ID not found for this model")
+            assistant_id = model["assistant_id"]
+            if not assistant_id:
+                raise HTTPException(status_code=400, detail="Model does not have an associated assistant")
+        
+        # Check file size limit (10MB)
+        content = await file.read()
+        file_size = len(content)
+        max_size = 10 * 1024 * 1024  # 10MB
+        
+        if file_size > max_size:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"File size exceeds maximum allowed size of 10MB"
+            )
+        
+        # Create a temporary file
+        file_extension = os.path.splitext(file.filename)[1] if file.filename else ""
+        temp_file_fd, temp_file_path = tempfile.mkstemp(prefix="upload_", suffix=file_extension)
+        
+        # Write the file content
+        with os.fdopen(temp_file_fd, "wb") as temp_file:
+            temp_file.write(content)
+        
+        # Reset file position for future reads
+        await file.seek(0)
         
         # Upload file to OpenAI
-        file_content = await file.read()
-        file_object = (file.filename, file_content)
-
-        # Use File Batches API for uploading and polling status
-        file_batch = client.vector_stores.file_batches.upload_and_poll(
-            vector_store_id=vector_store_id, files=[file_object]
-        )
-
-        # Check batch status (optional, but good practice)
-        if file_batch.status != 'completed':
-            logger.warning(f"File batch processing for vector store {vector_store_id} did not complete successfully. Status: {file_batch.status}")
-
-        # Retrieve the OpenAI file ID from the batch if needed for the database record
-        openai_file_id = None
-        if file_batch.file_counts.completed == 1:
-            logger.info(f"File {file.filename} successfully added to vector store {vector_store_id}")
-        else:
-            logger.error(f"Failed to add file {file.filename} to vector store {vector_store_id}. Batch status: {file_batch.status}")
-            raise HTTPException(status_code=500, detail=f"Failed to process file {file.filename} for assistant.")
-
-        # Save file info to database (using a placeholder or fetched ID for openai_file_id)
-        db_file_id = str(uuid.uuid4())
-        now = datetime.utcnow().isoformat()
+        with open(temp_file_path, "rb") as f:
+            openai_file = client.files.create(
+                file=f,
+                purpose="assistants"
+            )
         
+        # Associate the file with the assistant
+        client.beta.assistants.files.create(
+            assistant_id=assistant_id,
+            file_id=openai_file.id
+        )
+        
+        # Store the file association in the database
         with get_db() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT INTO model_files (id, model_id, file_id, filename, created_at) VALUES (?, ?, ?, ?, ?)",
-                (db_file_id, model_id, f"batch_{file_batch.id}", file.filename, now)
+                "INSERT INTO model_files (model_id, file_id, file_name) VALUES (?, ?, ?)",
+                (model_id, openai_file.id, file.filename)
             )
             conn.commit()
         
-        return {"message": f"File {file.filename} added to model successfully"}
-        
+        return {"file_id": openai_file.id, "filename": file.filename}
+    
     except Exception as e:
-        logger.error(f"Error adding file to model: {str(e)}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error uploading file: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Error uploading file: {str(e)}")
+    
+    finally:
+        # Clean up the temporary file
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.remove(temp_file_path)
+            except Exception as e:
+                logger.error(f"Failed to remove temporary file: {str(e)}")
 
 @app.delete("/api/custom_models/{model_id}")
 async def delete_custom_model(model_id: str):
-    """Delete a custom model"""
+    """Delete a custom model and its associated resources"""
     try:
         with get_db() as conn:
             cursor = conn.cursor()
-            
-            # Check if model exists
             cursor.execute("SELECT * FROM custom_models WHERE id = ?", (model_id,))
             model = cursor.fetchone()
             
@@ -546,7 +636,7 @@ async def delete_custom_model(model_id: str):
             assistant_id = model["assistant_id"]
             vector_store_id = model["vector_store_id"]
 
-            # If it's an assistant model, delete the assistant and vector store from OpenAI
+            # If it's an assistant model, delete the assistant from OpenAI
             if model["model_type"] == "assistant":
                 if assistant_id:
                     try:
@@ -555,18 +645,12 @@ async def delete_custom_model(model_id: str):
                     except Exception as e:
                         # Log error but continue cleanup
                         logger.error(f"Error deleting assistant {assistant_id} from OpenAI: {str(e)}")
+                
+                # Vector store handling is no longer needed in the new OpenAI API
                 if vector_store_id:
-                    try:
-                        client.vector_stores.delete(vector_store_id=vector_store_id)
-                        logger.info(f"Deleted Vector Store {vector_store_id} from OpenAI.")
-                    except Exception as e:
-                        # Log error but continue cleanup
-                        logger.error(f"Error deleting vector store {vector_store_id} from OpenAI: {str(e)}")
+                    logger.info(f"Vector store ID {vector_store_id} noted but no deletion necessary - feature removed from OpenAI API")
 
-            # Delete any associated files from OpenAI (This might be redundant if vector store is deleted, but kept for safety)
-            # Note: The file IDs stored in model_files might be batch IDs now, not individual file IDs.
-            # Deleting individual files associated with the vector store might be complex/unnecessary if the store is deleted.
-            # Consider removing this loop if vector store deletion handles contained files.
+            # Delete any associated files from OpenAI
             cursor.execute("SELECT * FROM model_files WHERE model_id = ?", (model_id,))
             files = cursor.fetchall()
             
@@ -591,62 +675,81 @@ async def delete_custom_model(model_id: str):
 
 @app.post("/api/custom_models/{model_id}/extract_website_content")
 async def extract_website_content(model_id: str, data: Dict[str, str]):
-    """Extract content from a website URL and add it to the model's context"""
+    """Extract content from a website URL and add it to a custom model"""
     try:
-        if "url" not in data:
+        url = data.get("url")
+        if not url:
             raise HTTPException(status_code=400, detail="URL is required")
         
-        url = data["url"]
-        include_subpages = data.get("include_subpages", "false").lower() == "true"
-        
-        # Extract content from the website
-        if include_subpages:
-            result = extract_website_with_subpages(url, max_pages=3)
-        else:
-            result = extract_content(url)
-        
-        if not result["success"]:
-            raise HTTPException(status_code=500, detail=f"Failed to extract content from {url}: {result['content']}")
-        
-        website_content = f"Title: {result['title']}\n\n"
-        if result["description"]:
-            website_content += f"Description: {result['description']}\n\n"
-        website_content += result["content"]
-        
-        # Update model config with website content
+        # Get the model from the database
         with get_db() as conn:
             cursor = conn.cursor()
-            
-            # Check if model exists
             cursor.execute("SELECT * FROM custom_models WHERE id = ?", (model_id,))
-            model = cursor.fetchone()
+            model_data = cursor.fetchone()
             
-            if not model:
-                raise HTTPException(status_code=404, detail=f"Custom model with id {model_id} not found")
+            if not model_data:
+                raise HTTPException(status_code=404, detail="Model not found")
             
-            # Update config
-            config = json.loads(model["config"])
-            config["website_url"] = url
-            config["website_content"] = website_content
-            
-            now = datetime.utcnow().isoformat()
-            
+            model_type = model_data["model_type"]
+            assistant_id = model_data["assistant_id"]
+            config = json.loads(model_data["config"])
+        
+        # Extract content from the website
+        logger.info(f"Extracting content from {url}")
+        content = extract_content(url)
+        
+        # For more comprehensive extraction with subpages
+        try:
+            # Replace with direct call to extract content with subpages
+            subpages_content = extract_website_with_subpages(url, max_pages=5)
+            if subpages_content and len(subpages_content) > len(content):
+                content = subpages_content
+        except Exception as e:
+            logger.warning(f"Error in comprehensive extraction: {str(e)}. Falling back to basic extraction.")
+        
+        # Update the model configuration
+        config["website_content"] = content
+        config["website_url"] = url
+        
+        # If it's an assistant model, update the assistant with the new content
+        if model_type == "assistant" and assistant_id:
+            try:
+                # Create a temporary file with the website content
+                with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as temp:
+                    temp.write(content)
+                    temp_path = temp.name
+                
+                # Upload the file to OpenAI
+                with open(temp_path, 'rb') as file:
+                    file_upload = client.files.create(
+                        file=file,
+                        purpose="assistants"
+                    )
+                
+                # Attach the file to the assistant
+                client.beta.assistants.files.create(
+                    assistant_id=assistant_id,
+                    file_id=file_upload.id
+                )
+                
+                # Clean up temporary file
+                os.unlink(temp_path)
+                
+                logger.info(f"Uploaded website content to assistant as file: {file_upload.id}")
+            except Exception as e:
+                logger.error(f"Error updating assistant with website content: {str(e)}")
+                logger.error(traceback.format_exc())
+        
+        # Update the model in the database
+        with get_db() as conn:
+            cursor = conn.cursor()
             cursor.execute(
                 "UPDATE custom_models SET config = ?, updated_at = ? WHERE id = ?",
-                (json.dumps(config), now, model_id)
+                (json.dumps(config), datetime.now().isoformat(), model_id)
             )
             conn.commit()
         
-        content_preview = website_content[:200] + "..." if len(website_content) > 200 else website_content
-        
-        return {
-            "message": "Website content extracted and added to model successfully",
-            "content_preview": content_preview,
-            "pages_extracted": result.get("pages_extracted", 1) if include_subpages else 1
-        }
-        
-    except HTTPException:
-        raise
+        return {"status": "success", "message": "Website content extracted successfully"}
     except Exception as e:
         logger.error(f"Error extracting website content: {str(e)}")
         logger.error(f"Traceback: {traceback.format_exc()}")
@@ -654,10 +757,55 @@ async def extract_website_content(model_id: str, data: Dict[str, str]):
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "healthy"}
+    """
+    Health check endpoint to verify the API is running
+    Returns more detailed information about backend status
+    """
+    try:
+        # Test database connection
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT 1")
+        
+        # Simple OpenAI API check
+        api_status = "available" if api_key and not api_key.startswith("sk-dummy") else "unavailable"
+        
+        return {
+            "status": "healthy",
+            "timestamp": datetime.now().isoformat(),
+            "database": "connected",
+            "openai_api": api_status,
+            "version": "1.0.0"
+        }
+    except Exception as e:
+        logger.error(f"Health check failed: {str(e)}")
+        return {
+            "status": "unhealthy",
+            "error": str(e),
+            "timestamp": datetime.now().isoformat()
+        }
+
+@app.get("/api/models")
+async def get_available_models():
+    """Get a list of available GPT models"""
+    try:
+        # Get models from OpenAI API
+        models = client.models.list()
+        
+        # Filter for GPT models only
+        gpt_models = [
+            {"id": model.id, "name": model.id}
+            for model in models.data
+            if any(prefix in model.id for prefix in ["gpt-", "text-"])
+        ]
+        
+        return {"models": gpt_models}
+    except Exception as e:
+        logger.error(f"Error getting models: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Add this code at the end of the file
 if __name__ == "__main__":
     import uvicorn
     print("Starting server directly...")
-    uvicorn.run(app, host="0.0.0.0", port=8001) 
+    uvicorn.run(app, host="0.0.0.0", port=8000) 

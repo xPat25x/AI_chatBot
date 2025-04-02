@@ -2,35 +2,23 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   Container,
   Paper,
-  TextField,
-  Button,
   Box,
   Typography,
-  CircularProgress,
-  Select,
-  MenuItem,
-  FormControl,
-  InputLabel,
-  Tabs,
-  Tab,
+  SelectChangeEvent,
+  Snackbar,
+  Alert,
+  Fab,
   Dialog,
   DialogTitle,
   DialogContent,
   DialogActions,
-  Snackbar,
-  Alert,
-  Switch,
-  FormControlLabel,
-  SelectChangeEvent,
+  Button,
+  TextField,
 } from '@mui/material';
-import SendIcon from '@mui/icons-material/Send';
 import AddIcon from '@mui/icons-material/Add';
-import DeleteIcon from '@mui/icons-material/Delete';
-import LinkIcon from '@mui/icons-material/Link';
-import FileUploadIcon from '@mui/icons-material/FileUpload';
 import axios from 'axios';
 import { Message, CustomModel } from './types';
-import { API_BASE_URL, purposes, modelTypes } from './constants';
+import { API_BASE_URL, purposes } from './constants';
 import ChatMessageList from './components/ChatMessageList';
 import ChatInput from './components/ChatInput';
 import AppHeader from './components/AppHeader';
@@ -42,29 +30,18 @@ function App() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [purpose, setPurpose] = useState('General Knowledge');
   const [loading, setLoading] = useState(false);
-  const [tabValue, setTabValue] = useState(0);
   const [customModels, setCustomModels] = useState<CustomModel[]>([]);
   const [selectedModelId, setSelectedModelId] = useState<string | null>(null);
   
   const [modelDialogOpen, setModelDialogOpen] = useState(false);
   const [newModelName, setNewModelName] = useState('');
   const [newModelDesc, setNewModelDesc] = useState('');
-  const [newModelType, setNewModelType] = useState<'gpt' | 'assistant'>('gpt');
   const [newModelInstructions, setNewModelInstructions] = useState('');
-  const [websiteUrl, setWebsiteUrl] = useState('');
-  const [fileDialogOpen, setFileDialogOpen] = useState(false);
-  const [websiteDialogOpen, setWebsiteDialogOpen] = useState(false);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState('');
   const [snackbarSeverity, setSnackbarSeverity] = useState<'success' | 'error' | 'info' | 'warning'>('success');
   
-  const [uploading, setUploading] = useState(false);
-  
-  const [websiteExtracting, setWebsiteExtracting] = useState(false);
-  
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -74,27 +51,55 @@ function App() {
     scrollToBottom();
   }, [messages]);
   
+  // Increase retry count and delay for slow-starting backends
+  const MAX_RETRIES = 10;  // Increased from 5
+  const RETRY_DELAY = 5000; // Increased from 3000 (5 seconds between attempts)
+
   useEffect(() => {
-    const checkBackend = async () => {
+    let retryCount = 0;
+    let connectionTimer: NodeJS.Timeout;
+    
+    const checkBackendWithRetry = async () => {
       try {
         await axios.get(`${API_BASE_URL}/api/health`);
-        showSnackbar('Backend server detected!', 'success');
-      } catch (error) {
-        showSnackbar('Backend server not available', 'error');
+        showSnackbar('Backend server connected', 'success');
+        // If successful, fetch models
+        fetchCustomModels();
+      } catch (error: any) {
+        console.log(`Backend connection attempt ${retryCount + 1}/${MAX_RETRIES} failed - trying to connect to ${API_BASE_URL}/api/health`);
+        
+        if (retryCount < MAX_RETRIES) {
+          retryCount++;
+          // Schedule next retry
+          connectionTimer = setTimeout(checkBackendWithRetry, RETRY_DELAY);
+          if (retryCount === 1) {
+            // Only show this message on the first retry attempt
+            showSnackbar(`Connecting to backend server at ${API_BASE_URL}...`, 'info');
+          }
+        } else {
+          // Max retries reached
+          showSnackbar(`Backend server not available at ${API_BASE_URL}. Please check if backend is running on port 8000.`, 'warning');
+        }
       }
     };
     
-    checkBackend();
-    fetchCustomModels();
+    // Start the connection check process
+    checkBackendWithRetry();
+    
+    // Cleanup timer on component unmount
+    return () => {
+      clearTimeout(connectionTimer);
+    };
   }, []);
   
   const fetchCustomModels = async () => {
     try {
       const response = await axios.get(`${API_BASE_URL}/api/custom_models`);
       setCustomModels(response.data);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error fetching custom models:', error);
-      showSnackbar('Failed to fetch custom models from backend', 'error');
+      // Don't show an error snackbar here since we don't want to disrupt the user
+      // Just initialize with empty array which is already the default state
     }
   };
   
@@ -135,13 +140,37 @@ function App() {
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error:', error);
-      const errorMessage: Message = {
-        role: 'assistant',
-        content: 'Sorry, I encountered an error. Please try again.',
-        timestamp: new Date(),
-      };
+      let errorMessage: Message;
+      
+      // Check if it's a connection error
+      if (error?.message && typeof error.message === 'string' && error.message.includes('Network Error')) {
+        errorMessage = {
+          role: 'assistant',
+          content: `I couldn't connect to the backend server at ${API_BASE_URL}. Please make sure the backend is running on port 8000 and try again.`,
+          timestamp: new Date(),
+        };
+        
+        // Try to auto-reconnect
+        setTimeout(() => {
+          axios.get(`${API_BASE_URL}/api/health`)
+            .then(() => {
+              showSnackbar('Backend server connected!', 'success');
+              fetchCustomModels();
+            })
+            .catch(() => {
+              // Silent catch - we don't need to show another error
+            });
+        }, 3000);
+      } else {
+        errorMessage = {
+          role: 'assistant',
+          content: 'Sorry, I encountered an error processing your request. Please try again.',
+          timestamp: new Date(),
+        };
+      }
+      
       setMessages((prev) => [...prev, errorMessage]);
     } finally {
       setLoading(false);
@@ -154,7 +183,7 @@ function App() {
       const modelPayload = {
         name: newModelName,
         description: newModelDesc,
-        model_type: newModelType,
+        model_type: selectedModelId === 'gpt' ? 'gpt' : 'assistant',
         instructions: newModelInstructions,
       };
 
@@ -166,196 +195,195 @@ function App() {
       showSnackbar('Custom model created successfully', 'success');
       setSelectedModelId(response.data.id);
 
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error creating model:', error);
       showSnackbar('Failed to create custom model', 'error');
     }
   };
   
-  const extractWebsiteContent = async (modelId: string, url: string) => {
-    setWebsiteExtracting(true);
-    try {
-      await axios.post(`${API_BASE_URL}/api/custom_models/${modelId}/extract_website_content`, {
-        url: url
-      });
-      showSnackbar('Website content extracted successfully', 'success');
-    } catch (error) {
-      console.error('Error extracting website content:', error);
-      showSnackbar('Failed to extract website content', 'error');
-      throw error;
-    } finally {
-      setWebsiteExtracting(false);
-    }
+  const handlePurposeChange = (event: SelectChangeEvent<string>) => {
+    setPurpose(event.target.value);
+    setSelectedModelId(null);
   };
-  
-  const handleFileUpload = async () => {
-    if (!selectedFile || !selectedModelId) return;
-    
-    const formData = new FormData();
-    formData.append('file', selectedFile);
-    setUploading(true);
-    
-    try {
-      await axios.post(
-        `${API_BASE_URL}/api/custom_models/${selectedModelId}/files`,
-        formData,
-        {
-          headers: {
-            'Content-Type': 'multipart/form-data',
-          },
-        }
-      );
-      
-      setFileDialogOpen(false);
-      setSelectedFile(null);
-      showSnackbar('File uploaded successfully', 'success');
-    } catch (error) {
-      console.error('Error uploading file:', error);
-      showSnackbar('Failed to upload file', 'error');
-    } finally {
-      setUploading(false);
-    }
-  };
-  
-  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
-    if (event.target.files && event.target.files.length > 0) {
-      setSelectedFile(event.target.files[0]);
-    } else {
-      setSelectedFile(null);
-    }
-  };
-  
-  const handleDeleteModel = async (modelId: string) => {
-    try {
-      await axios.delete(`${API_BASE_URL}/api/custom_models/${modelId}`);
-      
-      setCustomModels(customModels.filter(model => model.id !== modelId));
-      
-      if (selectedModelId === modelId) {
-        setSelectedModelId(null);
-      }
-      
-      showSnackbar('Model deleted successfully', 'success');
-    } catch (error) {
-      console.error('Error deleting model:', error);
-      showSnackbar('Failed to delete model', 'error');
-    }
+
+  const handleModelSelect = (event: SelectChangeEvent<string>) => {
+    setSelectedModelId(event.target.value);
   };
   
   const resetModelForm = () => {
     setNewModelName('');
     setNewModelDesc('');
-    setNewModelType('gpt');
     setNewModelInstructions('');
-  };
-  
-  const handleWebsiteIntegration = async () => {
-    if (!websiteUrl || !selectedModelId) return;
-    try {
-      await extractWebsiteContent(selectedModelId, websiteUrl);
-      setWebsiteDialogOpen(false);
-      setWebsiteUrl('');
-      showSnackbar('Website content extraction initiated.', 'success');
-    } catch (error) {
-      // Error is already logged and snackbar shown in extractWebsiteContent
-      // No need to show another snackbar here
-    }
   };
 
   return (
-    <Container maxWidth="lg" sx={{ height: '100vh', display: 'flex', flexDirection: 'column', p: 0 }}>
-      <AppHeader 
-        tabValue={tabValue}
-        onTabChange={(_event: React.SyntheticEvent, newValue: number) => setTabValue(newValue)}
+    <Container 
+      maxWidth="md" 
+      sx={{ 
+        height: '100vh', 
+        display: 'flex', 
+        flexDirection: 'column', 
+        p: { xs: 0 },
+        overflow: 'hidden',
+        bgcolor: 'background.default'
+      }}
+    >
+      <AppHeader
         purposes={purposes}
         purpose={purpose}
-        onPurposeChange={(e: SelectChangeEvent<string>) => setPurpose(e.target.value)}
+        onPurposeChange={handlePurposeChange}
         customModels={customModels}
         selectedModelId={selectedModelId}
-        onModelSelect={(e: SelectChangeEvent<string>) => setSelectedModelId(e.target.value)}
-        onCreateModelClick={() => setModelDialogOpen(true)}
-        onUploadFileClick={() => setFileDialogOpen(true)}
-        onAddWebsiteClick={() => setWebsiteDialogOpen(true)}
-        onDeleteModelClick={(modelId: string) => {
-          if (window.confirm('Are you sure you want to delete this model?')) {
-            handleDeleteModel(modelId);
+        onModelSelect={handleModelSelect}
+      />
+      
+      <Box sx={{ 
+        flexGrow: 1, 
+        display: 'flex', 
+        flexDirection: 'column', 
+        position: 'relative',
+        overflow: 'hidden' 
+      }}>
+        <Paper 
+          elevation={0} 
+          sx={{ 
+            flexGrow: 1, 
+            display: 'flex', 
+            flexDirection: 'column',
+            overflow: 'hidden',
+            borderRadius: 0,
+            bgcolor: 'transparent',
+            border: 'none'
+          }}
+        >
+          <ChatMessageList 
+            messages={messages} 
+            loading={loading} 
+            messagesEndRef={messagesEndRef} 
+          />
+          <ChatInput onSend={handleSend} loading={loading} />
+        </Paper>
+        
+        <Fab 
+          color="primary" 
+          aria-label="add custom model"
+          onClick={() => setModelDialogOpen(true)}
+          sx={{ 
+            position: 'absolute', 
+            bottom: 16, 
+            right: 16,
+            boxShadow: '0 4px 12px rgba(26, 115, 232, 0.35)',
+            '&:hover': {
+              boxShadow: '0 6px 16px rgba(26, 115, 232, 0.45)',
+            },
+            transition: 'box-shadow 0.2s ease-in-out'
+          }}
+        >
+          <AddIcon />
+        </Fab>
+      </Box>
+      
+      <Dialog 
+        open={modelDialogOpen} 
+        onClose={() => setModelDialogOpen(false)} 
+        maxWidth="sm" 
+        fullWidth
+        PaperProps={{
+          elevation: 3,
+          sx: {
+            borderRadius: 2,
+            overflow: 'hidden'
           }
         }}
-      />
-
-      <Paper 
-        elevation={0} 
-        sx={{ 
-          flexGrow: 1,
-          display: 'flex', 
-          flexDirection: 'column', 
-          overflow: 'hidden',
-          bgcolor: 'background.default'
-        }}
       >
-        <ChatMessageList 
-          messages={messages}
-          loading={loading}
-          messagesEndRef={messagesEndRef}
-        />
-
-        <ChatInput onSend={handleSend} loading={loading} />
-      </Paper>
+        <DialogTitle 
+          sx={{ 
+            borderBottom: '1px solid',
+            borderColor: 'divider',
+            px: 3,
+            py: 2
+          }}
+        >
+          <Typography variant="h6" fontWeight={600}>Create a Custom Model</Typography>
+        </DialogTitle>
+        <DialogContent sx={{ px: 3, py: 3 }}>
+          <TextField
+            fullWidth
+            margin="normal"
+            label="Name"
+            value={newModelName}
+            onChange={(e) => setNewModelName(e.target.value)}
+            placeholder="My Custom Assistant"
+            variant="outlined"
+            InputProps={{
+              sx: { borderRadius: 1.5 }
+            }}
+          />
+          <TextField
+            fullWidth
+            margin="normal"
+            label="Description"
+            value={newModelDesc}
+            onChange={(e) => setNewModelDesc(e.target.value)}
+            placeholder="A brief description of what this model does"
+            variant="outlined"
+            InputProps={{
+              sx: { borderRadius: 1.5 }
+            }}
+          />
+          <TextField
+            fullWidth
+            margin="normal"
+            label="Instructions"
+            value={newModelInstructions}
+            onChange={(e) => setNewModelInstructions(e.target.value)}
+            multiline
+            rows={4}
+            placeholder="How should this model behave? What knowledge does it have?"
+            variant="outlined"
+            InputProps={{
+              sx: { borderRadius: 1.5 }
+            }}
+          />
+        </DialogContent>
+        <DialogActions sx={{ p: 2, borderTop: '1px solid', borderColor: 'divider' }}>
+          <Button 
+            onClick={() => setModelDialogOpen(false)}
+            sx={{ borderRadius: 2, px: 3 }}
+          >
+            Cancel
+          </Button>
+          <Button 
+            onClick={handleCreateModel} 
+            variant="contained"
+            disabled={!newModelName.trim() || !newModelInstructions.trim()}
+            sx={{ 
+              borderRadius: 2, 
+              px: 3,
+              boxShadow: '0 2px 8px rgba(26, 115, 232, 0.25)',
+            }}
+          >
+            Create
+          </Button>
+        </DialogActions>
+      </Dialog>
       
-      <CreateModelDialog
-        open={modelDialogOpen}
-        onClose={() => {
-          setModelDialogOpen(false);
-        }}
-        modelName={newModelName}
-        setModelName={setNewModelName}
-        modelDesc={newModelDesc}
-        setModelDesc={setNewModelDesc}
-        modelType={newModelType}
-        setModelType={setNewModelType}
-        modelInstructions={newModelInstructions}
-        setModelInstructions={setNewModelInstructions}
-        websiteUrl={websiteUrl}
-        setWebsiteUrl={setWebsiteUrl}
-        onSubmit={handleCreateModel}
-        modelTypes={modelTypes}
-      />
-      
-      <FileUploadDialog
-        open={fileDialogOpen}
-        onClose={() => {
-          setFileDialogOpen(false);
-          setSelectedFile(null);
-        }}
-        onFileSelect={handleFileSelect}
-        onFileUpload={handleFileUpload}
-        selectedFile={selectedFile}
-        uploading={uploading}
-      />
-      
-      <AddWebsiteDialog
-        open={websiteDialogOpen}
-        onClose={() => {
-          setWebsiteDialogOpen(false);
-        }}
-        onSubmit={handleWebsiteIntegration}
-        websiteUrl={websiteUrl}
-        setWebsiteUrl={setWebsiteUrl}
-        loading={websiteExtracting}
-      />
-      
-      <Snackbar
-        open={snackbarOpen}
-        autoHideDuration={6000}
+      <Snackbar 
+        open={snackbarOpen} 
+        autoHideDuration={6000} 
         onClose={() => setSnackbarOpen(false)}
         anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
-        sx={{ bottom: { xs: 8, sm: 24 } }}
+        sx={{ mb: 2 }}
       >
         <Alert 
           onClose={() => setSnackbarOpen(false)} 
-          severity={snackbarSeverity}
+          severity={snackbarSeverity} 
           variant="filled"
-          sx={{ width: '100%', boxShadow: 6 }}
+          sx={{ 
+            width: '100%', 
+            borderRadius: 2,
+            boxShadow: '0 4px 12px rgba(0,0,0,0.15)'
+          }}
         >
           {snackbarMessage}
         </Alert>

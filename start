@@ -1,0 +1,150 @@
+#!/bin/bash
+
+# Go to the project root directory
+cd "$(dirname "$0")"
+
+# Show starting message
+echo "🤖 Starting AI Chatbot..."
+
+# Check for Python and npm
+if ! command -v python3 &> /dev/null; then
+    echo "Error: python3 is not installed. Please install Python 3 and try again."
+    exit 1
+fi
+
+if ! command -v npm &> /dev/null; then
+    echo "Error: npm is not installed. Please install Node.js and npm, then try again."
+    exit 1
+fi
+
+# Check if OpenAI API key is set in .env
+if grep -q "OPENAI_API_KEY=sk-" backend/.env; then
+    echo "✓ OpenAI API key found in .env"
+else
+    echo "⚠️  Warning: OpenAI API key not found or may be invalid in backend/.env"
+    echo "The application may not function correctly without a valid API key."
+    echo "Please add your OpenAI API key to backend/.env"
+fi
+
+# Check if backend virtual environment exists, if not create it
+if [ ! -d "backend/venv" ]; then
+    echo "Creating Python virtual environment and installing dependencies..."
+    cd backend
+    python3 -m venv venv
+    source venv/bin/activate
+    pip install -r requirements.txt
+    deactivate
+    cd ..
+else
+    echo "✓ Backend virtual environment found"
+fi
+
+# Start the backend server
+echo "Setting up backend server on port 8000..."
+
+# Check if port 8000 is already in use and kill the process if needed
+if lsof -i :8000 > /dev/null; then
+    echo "⚠️  Port 8000 is already in use. Attempting to free up the port..."
+    
+    # Get the PID of the process using port 8000
+    PORT_PID=$(lsof -i :8000 -t)
+    
+    if [ -n "$PORT_PID" ]; then
+        echo "Killing process with PID $PORT_PID using port 8000..."
+        kill -9 $PORT_PID 2>/dev/null
+        sleep 1
+        
+        # Verify the port is now available
+        if lsof -i :8000 > /dev/null; then
+            echo "❌ Failed to free up port 8000. Please manually stop the process and try again."
+            exit 1
+        else
+            echo "✓ Port 8000 is now available."
+        fi
+    fi
+fi
+
+# Create a temporary log file for backend output
+BACKEND_LOG="/tmp/backend_log_$$.txt"
+touch $BACKEND_LOG
+
+# Start backend directly with output logged to file
+echo "Starting backend server (with detailed logging)..."
+cd backend
+source venv/bin/activate
+
+# Test if venv is activated properly
+if [[ "$VIRTUAL_ENV" == "" ]]; then
+    echo "❌ ERROR: Python virtual environment failed to activate."
+    echo "Please try activating it manually with: cd backend && source venv/bin/activate"
+    exit 1
+fi
+
+# Check if uvicorn is installed
+if ! python -c "import uvicorn" &> /dev/null; then
+    echo "❌ ERROR: uvicorn module not found. Installing..."
+    pip install uvicorn
+fi
+
+# Test if main.py exists
+if [ ! -f "main.py" ]; then
+    echo "❌ ERROR: main.py not found in backend directory."
+    echo "Current directory: $(pwd)"
+    echo "Contents of current directory:"
+    ls -la
+    exit 1
+fi
+
+# Start the backend with more verbose output
+echo "Starting uvicorn server..."
+python -m uvicorn main:app --host 0.0.0.0 --port 8000 --log-level debug > $BACKEND_LOG 2>&1 &
+BACKEND_PID=$!
+
+# Brief pause to let the process start
+sleep 2
+
+# Check if the process is running
+if ! ps -p $BACKEND_PID > /dev/null; then
+    echo "❌ ERROR: Backend process failed to start."
+    echo "Recent log output:"
+    tail -n 20 $BACKEND_LOG
+    exit 1
+fi
+
+cd ..
+
+# Wait for backend to start
+echo "Waiting for backend to initialize (20 seconds)..."
+for i in {1..20}; do
+    echo -n "."
+    sleep 1
+    # Try to connect to the backend
+    if curl --silent --head --fail http://localhost:8000/api/health > /dev/null; then
+        echo -e "\n✓ Backend server started successfully!"
+        break
+    fi
+    
+    # If this is the last attempt and it failed, show a warning
+    if [ $i -eq 20 ] && ! curl --silent --head --fail http://localhost:8000/api/health > /dev/null; then
+        echo -e "\n❌ ERROR: Backend server did not respond within 20 seconds."
+        echo "Most recent log output:"
+        tail -n 20 $BACKEND_LOG
+        echo "You can check the full backend log at: $BACKEND_LOG"
+        
+        # Ask if user wants to continue
+        read -p "Do you want to continue with just the frontend? (y/n): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo "Exiting..."
+            kill $BACKEND_PID 2>/dev/null
+            exit 1
+        fi
+    fi
+done
+
+# Start the frontend development server
+echo "Starting frontend server..."
+cd frontend && npm start
+
+# When the script exits, kill the backend process
+trap "echo 'Shutting down backend server...'; kill $BACKEND_PID 2>/dev/null" EXIT 

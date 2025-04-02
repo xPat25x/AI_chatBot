@@ -1,94 +1,68 @@
 import requests
 from bs4 import BeautifulSoup
 import logging
-from typing import Optional, Dict, Any, Union, List
+import re
+from typing import Optional, Dict, Any, Union, List, Set
 from urllib.parse import urljoin, urlparse
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def extract_website_content(url: str, max_length: int = 15000) -> Dict[str, Any]:
+def extract_website_content(url: str) -> str:
     """
     Extract content from a website URL
     
     Args:
-        url: The website URL to extract content from
-        max_length: Maximum length of content to extract
+        url: The URL to extract content from
         
     Returns:
-        A dictionary containing the extracted title, content, and metadata
+        Extracted text content
     """
     try:
-        logger.info(f"Extracting content from {url}")
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        response = requests.get(url, headers=headers, timeout=10)
         
-        # Make sure URL has scheme
-        if not urlparse(url).scheme:
-            url = f"https://{url}"
+        if response.status_code != 200:
+            return f"Error: Failed to fetch {url}, status code: {response.status_code}"
         
-        # Fetch webpage
-        response = requests.get(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-            },
-            timeout=10
-        )
-        response.raise_for_status()
-        
-        # Parse HTML
-        soup = BeautifulSoup(response.text, "lxml")
-        
-        # Extract title
-        title = ""
-        if soup.title:
-            title = soup.title.text.strip()
-        
-        # Extract metadata
-        meta_description = ""
-        meta_tags = soup.find_all("meta")
-        for tag in meta_tags:
-            if tag.get("name") == "description" or tag.get("property") == "og:description":
-                meta_description = tag.get("content", "")
-                break
+        # Parse the HTML content
+        soup = BeautifulSoup(response.text, 'lxml')
         
         # Remove script and style elements
-        for script in soup(["script", "style", "nav", "footer", "header"]):
+        for script in soup(["script", "style", "header", "footer", "nav"]):
             script.extract()
         
-        # Extract text from paragraphs, headers, and lists
-        content_elements = soup.find_all(["p", "h1", "h2", "h3", "h4", "h5", "h6", "li"])
-        content = []
+        # Get the title and description
+        title = soup.title.text.strip() if soup.title else "No title found"
+        meta_desc = soup.find("meta", attrs={"name": "description"})
+        description = meta_desc.get("content", "") if meta_desc else ""
         
-        for element in content_elements:
-            text = element.get_text().strip()
-            if text and len(text) > 20:  # Ignore very short text
-                content.append(text)
+        # Get the main content
+        # First, try to find the main content container
+        main_content = soup.find("main") or soup.find("article") or soup.find("div", class_=re.compile("content|main", re.I))
         
-        # Join content
-        full_content = "\n\n".join(content)
+        if main_content:
+            text = main_content.get_text(separator="\n")
+        else:
+            # If no main content container found, get all text
+            text = soup.get_text(separator="\n")
         
-        # Trim content if too long
-        if len(full_content) > max_length:
-            full_content = full_content[:max_length] + "..."
+        # Clean up the text
+        lines = (line.strip() for line in text.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        text = "\n".join(chunk for chunk in chunks if chunk)
         
-        return {
-            "title": title,
-            "description": meta_description,
-            "content": full_content,
-            "url": url,
-            "success": True
-        }
-            
+        # Prepare the result
+        full_content = f"Title: {title}\n\nDescription: {description}\n\nContent:\n{text}"
+        
+        return full_content
+        
     except Exception as e:
         logger.error(f"Error extracting content from {url}: {str(e)}")
-        return {
-            "title": "",
-            "description": "",
-            "content": f"Error extracting content: {str(e)}",
-            "url": url,
-            "success": False
-        }
+        return f"Error extracting content: {str(e)}"
 
 def extract_links(url: str) -> List[str]:
     """
@@ -141,63 +115,95 @@ def extract_links(url: str) -> List[str]:
         logger.error(f"Error extracting links from {url}: {str(e)}")
         return []
 
-def extract_website_with_subpages(url: str, max_pages: int = 3, max_length_per_page: int = 5000) -> Dict[str, Any]:
+def extract_website_with_subpages(url: str, max_pages: int = 5) -> str:
     """
-    Extract content from a website URL and a limited number of its subpages
+    Extract content from a website URL including linked subpages
     
     Args:
-        url: The main website URL to extract content from
-        max_pages: Maximum number of pages to extract (including the main page)
-        max_length_per_page: Maximum length of content to extract per page
+        url: The main URL to extract
+        max_pages: Maximum number of pages to extract
         
     Returns:
-        A dictionary containing the extracted content from all pages
+        Combined text content from all pages
     """
+    # Keep track of visited URLs
+    visited_urls: Set[str] = set()
+    all_content = []
+    
+    def should_visit(link: str) -> bool:
+        """Check if the link should be visited"""
+        # Parse the original URL and the link
+        original_domain = urlparse(url).netloc
+        link_domain = urlparse(link).netloc
+        
+        # Only follow links from the same domain
+        if original_domain != link_domain:
+            return False
+        
+        # Avoid visiting the same URL twice
+        if link in visited_urls:
+            return False
+        
+        # Avoid common file types
+        if any(ext in link.lower() for ext in ['.pdf', '.jpg', '.png', '.gif', '.zip']):
+            return False
+            
+        return True
+    
+    def extract_links(html_content: str, base_url: str) -> List[str]:
+        """Extract links from HTML content"""
+        soup = BeautifulSoup(html_content, 'lxml')
+        links = []
+        
+        for a_tag in soup.find_all('a', href=True):
+            href = a_tag['href']
+            # Create absolute URL
+            full_url = urljoin(base_url, href)
+            if should_visit(full_url):
+                links.append(full_url)
+                
+        return links
+    
+    # Start with the main URL
+    main_queue = [url]
+    visited_urls.add(url)
+    
+    # Extract content from the main page
     try:
-        # Extract content from main page
-        main_content = extract_website_content(url, max_length_per_page)
-        
-        if not main_content["success"]:
-            return main_content
-        
-        # Initialize combined content
-        combined_content = main_content["content"]
-        pages_extracted = 1
-        
-        # Extract links from main page
-        if pages_extracted < max_pages:
-            links = extract_links(url)
-            
-            # Extract content from subpages
-            for link in links:
-                if pages_extracted >= max_pages:
-                    break
-                
-                # Extract content from subpage
-                subpage_content = extract_website_content(link, max_length_per_page)
-                
-                if subpage_content["success"]:
-                    # Add subpage content to combined content
-                    combined_content += f"\n\n--- Page: {subpage_content['title']} ({link}) ---\n\n"
-                    combined_content += subpage_content["content"]
-                    pages_extracted += 1
-        
-        return {
-            "title": main_content["title"],
-            "description": main_content["description"],
-            "content": combined_content,
-            "url": url,
-            "pages_extracted": pages_extracted,
-            "success": True
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
+        response = requests.get(url, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            # Extract content from the main page
+            main_content = extract_website_content(url)
+            all_content.append(f"--- MAIN PAGE: {url} ---\n{main_content}")
             
+            # Extract links from the main page
+            links = extract_links(response.text, url)
+            
+            # Visit subpages up to max_pages
+            pages_visited = 1
+            for link in links:
+                if pages_visited >= max_pages:
+                    break
+                    
+                if link not in visited_urls:
+                    visited_urls.add(link)
+                    try:
+                        logger.info(f"Extracting content from subpage: {link}")
+                        subpage_content = extract_website_content(link)
+                        all_content.append(f"--- SUBPAGE: {link} ---\n{subpage_content}")
+                        pages_visited += 1
+                    except Exception as sub_err:
+                        logger.error(f"Error extracting content from subpage {link}: {str(sub_err)}")
+    
     except Exception as e:
-        logger.error(f"Error extracting website with subpages from {url}: {str(e)}")
-        return {
-            "title": "",
-            "description": "",
-            "content": f"Error extracting content: {str(e)}",
-            "url": url,
-            "pages_extracted": 0,
-            "success": False
-        } 
+        logger.error(f"Error in extract_website_with_subpages for {url}: {str(e)}")
+        return extract_website_content(url)  # Fallback to single page extraction
+    
+    # Combine all content
+    combined_content = "\n\n".join(all_content)
+    
+    return combined_content 

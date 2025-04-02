@@ -88,6 +88,20 @@ A full-stack application that allows you to create and interact with custom GPT 
 
 4. Open a browser and go to http://localhost:3000
 
+## Quick Start
+
+Just run:
+```
+./start
+```
+
+This single command will:
+1. Start the backend server on port 8000
+2. Start the frontend development server on port 3000
+3. Automatically connect the two services
+
+The app will be available at http://localhost:3000 in your browser.
+
 ## Using the Application
 
 ### General Chat

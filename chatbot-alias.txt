@@ -1,0 +1,1 @@
+alias chatbot="~/AI_chatBot/AI_chatBot/chatbot"

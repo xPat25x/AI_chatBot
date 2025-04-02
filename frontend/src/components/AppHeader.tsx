@@ -3,165 +3,164 @@ import {
   AppBar,
   Toolbar,
   Typography,
-  Switch,
-  FormControlLabel,
-  Tabs,
-  Tab,
   Box,
   Select,
   MenuItem,
   FormControl,
   InputLabel,
-  Button,
-  SelectChangeEvent // Import SelectChangeEvent
+  SelectChangeEvent,
+  useTheme,
+  Avatar,
+  Chip
 } from '@mui/material';
-import AddIcon from '@mui/icons-material/Add';
-import DeleteIcon from '@mui/icons-material/Delete';
-import LinkIcon from '@mui/icons-material/Link';
-import FileUploadIcon from '@mui/icons-material/FileUpload';
-import { CustomModel } from '../types'; // Import CustomModel type
+import SmartToyRoundedIcon from '@mui/icons-material/SmartToyRounded';
+import { CustomModel } from '../types';
 
 interface AppHeaderProps {
-  tabValue: number;
-  onTabChange: (event: React.SyntheticEvent, newValue: number) => void;
   purposes: string[];
   purpose: string;
-  onPurposeChange: (event: SelectChangeEvent<string>) => void; // Use specific event type
+  onPurposeChange: (event: SelectChangeEvent<string>) => void;
   customModels: CustomModel[];
   selectedModelId: string | null;
-  onModelSelect: (event: SelectChangeEvent<string>) => void; // Use specific event type
-  onCreateModelClick: () => void;
-  onUploadFileClick: () => void;
-  onAddWebsiteClick: () => void;
-  onDeleteModelClick: (modelId: string) => void;
+  onModelSelect: (event: SelectChangeEvent<string>) => void;
 }
 
 const AppHeader: React.FC<AppHeaderProps> = ({
-  tabValue,
-  onTabChange,
   purposes,
   purpose,
   onPurposeChange,
   customModels,
   selectedModelId,
   onModelSelect,
-  onCreateModelClick,
-  onUploadFileClick,
-  onAddWebsiteClick,
-  onDeleteModelClick,
 }) => {
-
-  const selectedModel = customModels.find(m => m.id === selectedModelId);
-
+  const theme = useTheme();
+  
   return (
-    <AppBar position="static" color="default" elevation={1}>
-      <Toolbar sx={{ flexDirection: 'column', alignItems: 'stretch', pt: 1, pb: 1 }}>
-        {/* Top Row: Title */}
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
-          <Typography variant="h6">
+    <AppBar 
+      position="static" 
+      elevation={0} 
+      sx={{ 
+        borderBottom: '1px solid',
+        borderColor: 'divider',
+        backgroundImage: 'linear-gradient(to right, rgba(255,255,255,0.95), rgba(255,255,255,0.95))',
+        backdropFilter: 'blur(10px)',
+      }}
+    >
+      <Toolbar sx={{ display: 'flex', alignItems: 'center', gap: 2, py: 1.5 }}>
+        <Box sx={{ display: 'flex', alignItems: 'center' }}>
+          <Avatar
+            sx={{
+              bgcolor: theme.palette.primary.main,
+              width: 40,
+              height: 40,
+              mr: 1.5,
+              boxShadow: '0 2px 8px rgba(26, 115, 232, 0.25)',
+            }}
+          >
+            <SmartToyRoundedIcon />
+          </Avatar>
+          <Typography 
+            variant="h6" 
+            sx={{ 
+              fontWeight: 600, 
+              background: 'linear-gradient(45deg, #1a73e8 30%, #6c5ce7 90%)',
+              WebkitBackgroundClip: 'text',
+              WebkitTextFillColor: 'transparent',
+            }}
+          >
             AI Chatbot
           </Typography>
         </Box>
-
-        {/* Second Row: Tabs */}
-        <Tabs 
-          value={tabValue} 
-          onChange={onTabChange}
-          indicatorColor="primary"
-          textColor="primary"
-          variant="fullWidth"
-          sx={{ borderBottom: 1, borderColor: 'divider' }}
+        
+        <FormControl 
+          size="small" 
+          sx={{ 
+            minWidth: 220, 
+            ml: 'auto',
+            '& .MuiOutlinedInput-root': {
+              borderRadius: '28px',
+              bgcolor: 'rgba(0, 0, 0, 0.03)',
+              transition: 'all 0.2s ease',
+              '&:hover': {
+                bgcolor: 'rgba(0, 0, 0, 0.05)',
+              },
+              '&.Mui-focused': {
+                bgcolor: 'white',
+                boxShadow: '0 0 0 2px rgba(26, 115, 232, 0.2)',
+              }
+            }
+          }}
         >
-          <Tab label="General Chat" />
-          <Tab label="Custom Models" />
-        </Tabs>
-
-        {/* Third Row: Contextual Controls (Purpose/Model Selection & Actions) */}
-        <Box sx={{ pt: 2 }}>
-          {tabValue === 0 ? (
-            <FormControl fullWidth size="small">
-              <InputLabel>Purpose</InputLabel>
-              <Select
-                value={purpose}
-                label="Purpose"
-                onChange={onPurposeChange}
-              >
-                {purposes.map((p) => (
-                  <MenuItem key={p} value={p}>
-                    {p}
+          <InputLabel id="chat-type-label">Chat Type</InputLabel>
+          <Select
+            labelId="chat-type-label"
+            value={selectedModelId || purpose}
+            label="Chat Type"
+            onChange={(e) => {
+              const value = e.target.value;
+              if (customModels.some(model => model.id === value)) {
+                onModelSelect(e);
+              } else {
+                onPurposeChange(e);
+              }
+            }}
+            MenuProps={{
+              PaperProps: {
+                elevation: 3,
+                sx: {
+                  mt: 1,
+                  borderRadius: 2,
+                  maxHeight: 400,
+                }
+              }
+            }}
+            renderValue={(selected) => {
+              const selectedModel = customModels.find(model => model.id === selected);
+              if (selectedModel) {
+                return (
+                  <Chip
+                    avatar={<SmartToyRoundedIcon fontSize="small" />}
+                    label={selectedModel.name}
+                    size="small"
+                    sx={{ 
+                      height: 24, 
+                      borderRadius: '12px',
+                      bgcolor: theme.palette.primary.light,
+                      color: 'white',
+                      fontWeight: 500,
+                      '& .MuiChip-avatar': {
+                        color: 'white',
+                      }
+                    }}
+                  />
+                );
+              }
+              return selected;
+            }}
+          >
+            <Typography variant="subtitle2" sx={{ px: 2, py: 1, color: 'text.secondary', fontWeight: 600 }}>
+              General Chat
+            </Typography>
+            {purposes.map((p) => (
+              <MenuItem key={p} value={p}>
+                {p}
+              </MenuItem>
+            ))}
+            
+            {customModels.length > 0 && (
+              <>
+                <Typography variant="subtitle2" sx={{ px: 2, py: 1, mt: 1, color: 'text.secondary', fontWeight: 600 }}>
+                  My Custom Models
+                </Typography>
+                {customModels.map((model) => (
+                  <MenuItem key={model.id} value={model.id}>
+                    {model.name}
                   </MenuItem>
                 ))}
-              </Select>
-            </FormControl>
-          ) : (
-            <Box>
-              <Box sx={{ display: 'flex', alignItems: 'center', mb: selectedModelId ? 1.5 : 0, gap: 2 }}>
-                <FormControl fullWidth size="small" sx={{ flexGrow: 1 }}>
-                  <InputLabel>Custom Model</InputLabel>
-                  <Select
-                    value={selectedModelId || ''}
-                    label="Custom Model"
-                    onChange={onModelSelect}
-                    displayEmpty
-                  >
-                    <MenuItem value="">
-                      <em>Default Model</em>
-                    </MenuItem>
-                    {customModels.map((model) => (
-                      <MenuItem key={model.id} value={model.id}>
-                        {model.name} ({model.model_type})
-                      </MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-                <Button
-                  variant="contained"
-                  color="primary"
-                  size="medium"
-                  startIcon={<AddIcon />}
-                  onClick={onCreateModelClick}
-                  sx={{ flexShrink: 0 }} // Prevent shrinking
-                >
-                  Create
-                </Button>
-              </Box>
-              
-              {selectedModelId && selectedModel && (
-                <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
-                  {/* Conditionally show Upload File only for assistant models */}
-                  {selectedModel.model_type === 'assistant' && (
-                     <Button
-                      variant="outlined"
-                      size="small"
-                      startIcon={<FileUploadIcon />}
-                      onClick={onUploadFileClick}
-                    >
-                      Upload File
-                    </Button>
-                  )}
-                  <Button
-                    variant="outlined"
-                    size="small"
-                    startIcon={<LinkIcon />}
-                    onClick={onAddWebsiteClick}
-                  >
-                    Add Website
-                  </Button>
-                  <Button
-                    variant="outlined"
-                    size="small"
-                    color="error"
-                    startIcon={<DeleteIcon />}
-                    onClick={() => onDeleteModelClick(selectedModelId)} // No need for confirm here, handled in App
-                    sx={{ ml: 'auto' }} // Push delete to the right
-                  >
-                    Delete Model
-                  </Button>
-                </Box>
-              )}
-            </Box>
-          )}
-        </Box>
+              </>
+            )}
+          </Select>
+        </FormControl>
       </Toolbar>
     </AppBar>
   );
