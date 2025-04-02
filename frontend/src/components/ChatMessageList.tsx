@@ -17,9 +17,19 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({ messages, loading, me
         flexGrow: 1, 
         overflowY: 'auto', 
         p: { xs: 2, sm: 3 }, 
-        bgcolor: 'background.default',
-        backgroundImage: 'radial-gradient(#e1e5f0 0.5px, transparent 0.5px)',
-        backgroundSize: '15px 15px',
+        bgcolor: 'white',
+        backgroundImage: 'none',
+        '&::-webkit-scrollbar': {
+          width: '6px',
+          backgroundColor: 'rgba(0, 0, 0, 0.05)',
+        },
+        '&::-webkit-scrollbar-thumb': {
+          backgroundColor: 'rgba(0, 0, 0, 0.2)',
+          borderRadius: '3px',
+          '&:hover': {
+            backgroundColor: 'rgba(0, 0, 0, 0.3)',
+          }
+        }
       }}
     >
       {messages.length === 0 && (
@@ -31,12 +41,47 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({ messages, loading, me
           alignItems: 'center',
           opacity: 0.8
         }}>
-          <SmartToyRounded fontSize="large" color="primary" sx={{ mb: 2, fontSize: 60, opacity: 0.7 }} />
-          <Typography variant="h6" color="text.secondary" gutterBottom>
+          <Box
+            sx={{
+              height: 80,
+              width: 80,
+              borderRadius: '50%',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              background: '#f0f4ff',
+              border: '1px solid rgba(67, 97, 238, 0.1)',
+              boxShadow: '0 2px 10px rgba(67, 97, 238, 0.1)',
+              mb: 3
+            }}
+          >
+            <SmartToyRounded 
+              fontSize="large" 
+              sx={{ 
+                fontSize: 40, 
+                color: '#4361ee'
+              }} 
+            />
+          </Box>
+          <Typography 
+            variant="h5" 
+            sx={{ 
+              color: '#333', 
+              fontWeight: 600,
+              mb: 1
+            }}
+          >
             AI Chatbot
           </Typography>
-          <Typography variant="body2" color="text.secondary" align="center">
-            Send a message to start a conversation
+          <Typography 
+            variant="body1" 
+            sx={{ 
+              color: '#666', 
+              textAlign: 'center',
+              maxWidth: '300px'
+            }}
+          >
+            Send en melding for å starte samtalen
           </Typography>
         </Box>
       )}
@@ -49,7 +94,7 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({ messages, loading, me
         const isUser = msg.role === 'user';
         const isFirstMessageOfGroup = index === 0 || messages[index - 1].role !== msg.role;
         const isLastMessageOfGroup = index === messages.length - 1 || messages[index + 1].role !== msg.role;
-        
+                
         return (
           <Fade 
             key={index} 
@@ -61,32 +106,32 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({ messages, loading, me
               sx={{
                 display: 'flex',
                 justifyContent: isUser ? 'flex-end' : 'flex-start',
-                mb: 1.5,
+                mb: 2,
                 alignItems: 'flex-start',
               }}
             >
               {!isUser && isFirstMessageOfGroup && (
                 <Avatar 
                   sx={{ 
-                    bgcolor: 'secondary.main', 
-                    mr: 1, 
+                    bgcolor: '#4361ee', 
+                    mr: 1.5, 
                     width: 36, 
                     height: 36,
-                    boxShadow: '0px 2px 4px rgba(0,0,0,0.1)'
+                    boxShadow: '0 2px 6px rgba(67, 97, 238, 0.2)'
                   }}
                 >
-                  <SmartToyRounded fontSize="small" />
+                  <SmartToyRounded fontSize="small" sx={{ color: 'white' }} />
                 </Avatar>
               )}
               
-              {!isUser && !isFirstMessageOfGroup && <Box sx={{ width: 36, mr: 1 }} />}
+              {!isUser && !isFirstMessageOfGroup && <Box sx={{ width: 36, mr: 1.5 }} />}
               
               <Box 
                 sx={{ 
                   display: 'flex', 
                   flexDirection: 'column', 
                   alignItems: isUser ? 'flex-end' : 'flex-start',
-                  maxWidth: '75%'
+                  maxWidth: { xs: '75%', sm: '65%' }
                 }}
               >
                 <Paper
@@ -94,30 +139,40 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({ messages, loading, me
                   sx={{
                     p: 1.5,
                     px: 2,
-                    bgcolor: isUser ? 'primary.main' : 'white',
-                    color: isUser ? 'primary.contrastText' : 'text.primary',
+                    bgcolor: isUser ? '#4361ee' : '#f0f4ff',
+                    color: isUser ? 'white' : '#333',
                     wordWrap: 'break-word',
                     borderRadius: isUser
                       ? isFirstMessageOfGroup 
-                        ? '18px 18px 4px 18px'
+                        ? '16px 16px 4px 16px'
                         : isLastMessageOfGroup
-                        ? '18px 4px 18px 18px'
-                        : '18px 4px 4px 18px'
+                        ? '16px 4px 16px 16px'
+                        : '16px 4px 4px 16px'
                       : isFirstMessageOfGroup
-                        ? '4px 18px 18px 18px'
+                        ? '4px 16px 16px 16px'
                         : isLastMessageOfGroup
-                        ? '18px 18px 18px 4px'
-                        : '4px 18px 18px 4px',
+                        ? '16px 16px 16px 4px'
+                        : '4px 16px 16px 4px',
                     boxShadow: isUser 
-                      ? '0px 2px 4px rgba(26, 115, 232, 0.2)' 
-                      : '0px 2px 4px rgba(0,0,0,0.05)',
+                      ? '0 2px 6px rgba(67, 97, 238, 0.2)' 
+                      : '0 1px 3px rgba(0, 0, 0, 0.05)',
+                    border: isUser 
+                      ? 'none'
+                      : '1px solid rgba(0, 0, 0, 0.05)',
                     borderTopRightRadius: isUser && !isFirstMessageOfGroup ? 4 : undefined,
                     borderTopLeftRadius: !isUser && !isFirstMessageOfGroup ? 4 : undefined,
                     borderBottomRightRadius: isUser && !isLastMessageOfGroup ? 4 : undefined,
-                    borderBottomLeftRadius: !isUser && !isLastMessageOfGroup ? 4 : undefined,
+                    borderBottomLeftRadius: !isUser && !isLastMessageOfGroup ? 4 : undefined
                   }}
                 >
-                  <Typography variant="body1" sx={{ whiteSpace: 'pre-wrap' }}>
+                  <Typography 
+                    variant="body1" 
+                    sx={{ 
+                      whiteSpace: 'pre-wrap',
+                      lineHeight: 1.5,
+                      fontWeight: isUser ? 400 : 400,
+                    }}
+                  >
                     {msg.content}
                   </Typography>
                 </Paper>
@@ -126,11 +181,10 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({ messages, loading, me
                   <Typography 
                     variant="caption" 
                     sx={{ 
-                      color: 'text.secondary', 
+                      color: '#999', 
                       mt: 0.5, 
                       px: 0.5,
-                      fontSize: '0.7rem',
-                      opacity: 0.8
+                      fontSize: '0.7rem'
                     }}
                   >
                     {formattedTime}
@@ -141,18 +195,18 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({ messages, loading, me
               {isUser && isFirstMessageOfGroup && (
                 <Avatar 
                   sx={{ 
-                    bgcolor: 'primary.main', 
-                    ml: 1, 
+                    bgcolor: '#3a56d4', 
+                    ml: 1.5, 
                     width: 36, 
                     height: 36,
-                    boxShadow: '0px 2px 4px rgba(0,0,0,0.1)'
+                    boxShadow: '0 2px 6px rgba(67, 97, 238, 0.2)'
                   }}
                 >
-                  <PersonRounded fontSize="small" />
+                  <PersonRounded fontSize="small" sx={{ color: 'white' }} />
                 </Avatar>
               )}
               
-              {isUser && !isFirstMessageOfGroup && <Box sx={{ width: 36, ml: 1 }} />}
+              {isUser && !isFirstMessageOfGroup && <Box sx={{ width: 36, ml: 1.5 }} />}
             </Box>
           </Fade>
         );
@@ -166,16 +220,17 @@ const ChatMessageList: React.FC<ChatMessageListProps> = ({ messages, loading, me
               alignItems: 'center', 
               mt: 2, 
               mb: 2,
-              bgcolor: 'background.paper',
+              bgcolor: '#f8f9fa',
               p: 1.5,
               px: 2,
-              borderRadius: '18px',
+              borderRadius: '12px',
               width: 'fit-content',
-              boxShadow: '0px 2px 4px rgba(0,0,0,0.05)'
+              boxShadow: '0 1px 3px rgba(0, 0, 0, 0.05)',
+              border: '1px solid rgba(0, 0, 0, 0.05)'
             }}
           >
-            <CircularProgress size={16} thickness={6} sx={{ mr: 1.5 }} />
-            <Typography variant="body2" color="text.secondary">Thinking...</Typography>
+            <CircularProgress size={16} thickness={5} sx={{ mr: 1.5, color: '#4361ee' }} />
+            <Typography variant="body2" color="#666">Tenker...</Typography>
           </Box>
         </Fade>
       )}

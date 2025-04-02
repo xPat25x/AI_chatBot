@@ -9,7 +9,6 @@ import {
   FormControl,
   InputLabel,
   SelectChangeEvent,
-  useTheme,
   Avatar,
   Chip
 } from '@mui/material';
@@ -33,39 +32,39 @@ const AppHeader: React.FC<AppHeaderProps> = ({
   selectedModelId,
   onModelSelect,
 }) => {
-  const theme = useTheme();
-  
   return (
     <AppBar 
       position="static" 
       elevation={0} 
       sx={{ 
-        borderBottom: '1px solid',
-        borderColor: 'divider',
-        backgroundImage: 'linear-gradient(to right, rgba(255,255,255,0.95), rgba(255,255,255,0.95))',
-        backdropFilter: 'blur(10px)',
+        borderBottom: '1px solid rgba(0, 0, 0, 0.08)',
+        background: 'white',
+        color: '#333'
       }}
     >
       <Toolbar sx={{ display: 'flex', alignItems: 'center', gap: 2, py: 1.5 }}>
         <Box sx={{ display: 'flex', alignItems: 'center' }}>
           <Avatar
             sx={{
-              bgcolor: theme.palette.primary.main,
-              width: 40,
-              height: 40,
+              background: '#4361ee',
+              width: 38,
+              height: 38,
               mr: 1.5,
-              boxShadow: '0 2px 8px rgba(26, 115, 232, 0.25)',
+              boxShadow: '0 2px 6px rgba(67, 97, 238, 0.2)',
+              transition: 'transform 0.2s ease',
+              '&:hover': {
+                transform: 'scale(1.05)'
+              }
             }}
           >
-            <SmartToyRoundedIcon />
+            <SmartToyRoundedIcon sx={{ color: 'white', fontSize: '1.3rem' }} />
           </Avatar>
           <Typography 
             variant="h6" 
             sx={{ 
               fontWeight: 600, 
-              background: 'linear-gradient(45deg, #1a73e8 30%, #6c5ce7 90%)',
-              WebkitBackgroundClip: 'text',
-              WebkitTextFillColor: 'transparent',
+              color: '#333',
+              letterSpacing: '0.3px'
             }}
           >
             AI Chatbot
@@ -78,16 +77,39 @@ const AppHeader: React.FC<AppHeaderProps> = ({
             minWidth: 220, 
             ml: 'auto',
             '& .MuiOutlinedInput-root': {
-              borderRadius: '28px',
-              bgcolor: 'rgba(0, 0, 0, 0.03)',
+              borderRadius: '8px',
+              bgcolor: 'white',
               transition: 'all 0.2s ease',
+              border: '1px solid rgba(0, 0, 0, 0.15)',
+              '& .MuiOutlinedInput-notchedOutline': {
+                borderColor: 'transparent',
+              },
               '&:hover': {
-                bgcolor: 'rgba(0, 0, 0, 0.05)',
+                bgcolor: '#f8f9fa',
+                '& .MuiOutlinedInput-notchedOutline': {
+                  borderColor: 'transparent',
+                },
               },
               '&.Mui-focused': {
                 bgcolor: 'white',
-                boxShadow: '0 0 0 2px rgba(26, 115, 232, 0.2)',
+                boxShadow: '0 0 0 2px rgba(67, 97, 238, 0.2)',
+                '& .MuiOutlinedInput-notchedOutline': {
+                  borderColor: '#4361ee',
+                  borderWidth: '1px',
+                },
               }
+            },
+            '& .MuiInputLabel-root': {
+              color: '#666',
+              '&.Mui-focused': {
+                color: '#4361ee',
+              }
+            },
+            '& .MuiSelect-select': {
+              color: '#333',
+            },
+            '& .MuiSvgIcon-root': {
+              color: '#666',
             }
           }}
         >
@@ -106,10 +128,25 @@ const AppHeader: React.FC<AppHeaderProps> = ({
             }}
             MenuProps={{
               PaperProps: {
-                elevation: 3,
+                elevation: 2,
                 sx: {
                   mt: 1,
-                  borderRadius: 2,
+                  borderRadius: 1.5,
+                  bgcolor: 'white',
+                  boxShadow: '0 4px 20px rgba(0, 0, 0, 0.08)',
+                  '& .MuiMenuItem-root': {
+                    color: '#333',
+                    py: 1,
+                    '&:hover': {
+                      bgcolor: '#f8f9fa',
+                    },
+                    '&.Mui-selected': {
+                      bgcolor: '#f0f4ff',
+                      '&:hover': {
+                        bgcolor: '#e6eeff',
+                      }
+                    }
+                  },
                   maxHeight: 400,
                 }
               }
@@ -119,13 +156,13 @@ const AppHeader: React.FC<AppHeaderProps> = ({
               if (selectedModel) {
                 return (
                   <Chip
-                    avatar={<SmartToyRoundedIcon fontSize="small" />}
+                    avatar={<SmartToyRoundedIcon fontSize="small" sx={{ color: 'white' }} />}
                     label={selectedModel.name}
                     size="small"
                     sx={{ 
-                      height: 24, 
-                      borderRadius: '12px',
-                      bgcolor: theme.palette.primary.light,
+                      height: 26, 
+                      borderRadius: '6px',
+                      background: '#4361ee',
                       color: 'white',
                       fontWeight: 500,
                       '& .MuiChip-avatar': {
@@ -135,26 +172,58 @@ const AppHeader: React.FC<AppHeaderProps> = ({
                   />
                 );
               }
-              return selected;
+              return <span style={{ color: '#333' }}>{selected}</span>;
             }}
           >
-            <Typography variant="subtitle2" sx={{ px: 2, py: 1, color: 'text.secondary', fontWeight: 600 }}>
+            <Typography 
+              variant="subtitle2" 
+              sx={{ 
+                px: 2, 
+                py: 1, 
+                color: '#666', 
+                fontWeight: 600,
+                borderBottom: '1px solid rgba(0, 0, 0, 0.08)'
+              }}
+            >
               General Chat
             </Typography>
             {purposes.map((p) => (
-              <MenuItem key={p} value={p}>
+              <MenuItem key={p} value={p} sx={{ py: 1 }}>
                 {p}
               </MenuItem>
             ))}
             
             {customModels.length > 0 && (
               <>
-                <Typography variant="subtitle2" sx={{ px: 2, py: 1, mt: 1, color: 'text.secondary', fontWeight: 600 }}>
+                <Typography 
+                  variant="subtitle2" 
+                  sx={{ 
+                    px: 2, 
+                    py: 1, 
+                    mt: 1, 
+                    color: '#666', 
+                    fontWeight: 600,
+                    borderBottom: '1px solid rgba(0, 0, 0, 0.08)'
+                  }}
+                >
                   My Custom Models
                 </Typography>
                 {customModels.map((model) => (
-                  <MenuItem key={model.id} value={model.id}>
-                    {model.name}
+                  <MenuItem key={model.id} value={model.id} sx={{ py: 1 }}>
+                    <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                      <Avatar
+                        sx={{
+                          width: 22,
+                          height: 22,
+                          mr: 1,
+                          background: '#4361ee',
+                          fontSize: '0.75rem'
+                        }}
+                      >
+                        <SmartToyRoundedIcon fontSize="small" sx={{ fontSize: '0.9rem' }} />
+                      </Avatar>
+                      {model.name}
+                    </Box>
                   </MenuItem>
                 ))}
               </>

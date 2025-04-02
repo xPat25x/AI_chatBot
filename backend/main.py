@@ -1,6 +1,6 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Depends, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from typing import List, Literal, Union, Optional, Dict, Any, cast
 from openai import OpenAI  # type: ignore
@@ -17,6 +17,10 @@ from datetime import datetime
 from utils.web_utils import extract_website_content as extract_content, extract_website_with_subpages
 import time
 import tempfile
+from fastapi.staticfiles import StaticFiles
+import html
+import re
+import asyncio
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -383,104 +387,109 @@ async def chat_with_custom_model(request: ChatRequest):
 @app.post("/api/custom_models", response_model=CustomModelResponse)
 async def create_custom_model(model: CustomModelCreate) -> CustomModelResponse:
     """Create a custom model based on the provided configuration"""
-    logger.info(f"Creating custom model: {model.name} ({model.model_type})")
-    
-    model_id = str(uuid.uuid4())
-    now = datetime.now().isoformat()
-    
-    # Prepare config JSON
-    config = {
-        "instructions": model.instructions,
-        "website_content": model.website_content or ""
-    }
-    
-    # For assistant type, create an assistant via the API
-    assistant_id = None
-    vector_store_id = None
-    
-    if model.model_type == "assistant":
-        try:
-            logger.info("Creating assistant via OpenAI API")
+    try:
+        logger.info(f"Creating custom model: {model.name} ({model.model_type})")
+        
+        model_id = str(uuid.uuid4())
+        now = datetime.now().isoformat()
             
-            # Create assistant
-            assistant = client.beta.assistants.create(
-                name=model.name,
-                instructions=model.instructions,
-                model=os.getenv("OPENAI_ASSISTANT_MODEL", "gpt-4o"),
-                description=model.description,
-                tools=[{"type": "retrieval"}]
-            )
+        # Prepare config JSON
+        config = {
+            "instructions": model.instructions,
+            "website_content": model.website_content or ""
+        }
+        
+        # For assistant type, create an assistant via the API
+        assistant_id = None
+        vector_store_id = None
             
-            assistant_id = assistant.id
-            logger.info(f"Created assistant with ID: {assistant_id}")
-            
-            # If website content is provided, create a file for the assistant
-            if model.website_content:
-                # We don't use vector_stores in the current OpenAI API version
-                # Instead, we'll upload the content as a file for the assistant
-                try:
-                    # Create a temporary file with the website content
-                    with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as temp:
-                        temp.write(model.website_content)
-                        temp_path = temp.name
-                    
-                    # Upload the file to OpenAI
-                    with open(temp_path, 'rb') as file:
-                        file_upload = client.files.create(
-                            file=file,
-                            purpose="assistants"
-                        )
-                    
-                    # Attach the file to the assistant
-                    client.beta.assistants.files.create(
-                        assistant_id=assistant_id,
-                        file_id=file_upload.id
-                    )
-                    
-                    # Clean up temporary file
-                    os.unlink(temp_path)
-                    
-                    logger.info(f"Uploaded website content to assistant as file: {file_upload.id}")
-                except Exception as e:
-                    logger.error(f"Error uploading website content: {str(e)}")
-                    logger.error(traceback.format_exc())
+        if model.model_type == "assistant":
+            try:
+                logger.info("Creating assistant via OpenAI API")
+
+                # Create assistant
+                assistant = client.beta.assistants.create(
+                    name=model.name,
+                    instructions=model.instructions,
+                    model=os.getenv("OPENAI_ASSISTANT_MODEL", "gpt-4o"),
+                    description=model.description,
+                    tools=[{"type": "retrieval"}]
+                )
                 
-        except Exception as e:
-            logger.error(f"Error creating assistant: {str(e)}")
-            logger.error(traceback.format_exc())
-            raise HTTPException(status_code=500, detail=f"Error creating assistant: {str(e)}")
-    
-    # Store model in database
-    with get_db() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
-            '''
-            INSERT INTO custom_models (id, name, description, model_type, assistant_id, vector_store_id, config, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''',
-            (
-                model_id, 
-                model.name, 
-                model.description, 
-                model.model_type,
-                assistant_id,
-                vector_store_id,
-                json.dumps(config),
-                now,
-                now
+                assistant_id = assistant.id
+                logger.info(f"Created assistant with ID: {assistant_id}")
+                
+                # If website content is provided, create a file for the assistant
+                if model.website_content:
+                    # We don't use vector_stores in the current OpenAI API version
+                    # Instead, we'll upload the content as a file for the assistant
+                    try:
+                        # Create a temporary file with the website content
+                        with tempfile.NamedTemporaryFile(mode='w', suffix='.txt', delete=False) as temp:
+                            temp.write(model.website_content)
+                            temp_path = temp.name
+                        
+                        # Upload the file to OpenAI
+                        with open(temp_path, 'rb') as file:
+                            file_upload = client.files.create(
+                                file=file,
+                                purpose="assistants"
+                            )
+                        
+                        # Attach the file to the assistant
+                        client.beta.assistants.files.create(
+                            assistant_id=assistant_id,
+                            file_id=file_upload.id
+                        )
+                        
+                        # Clean up temporary file
+                        os.unlink(temp_path)
+                        
+                        logger.info(f"Uploaded website content to assistant as file: {file_upload.id}")
+                    except Exception as e:
+                        logger.error(f"Error uploading website content: {str(e)}")
+                        logger.error(traceback.format_exc())
+                    
+            except Exception as e:
+                logger.error(f"Error creating assistant: {str(e)}")
+                logger.error(traceback.format_exc())
+                raise HTTPException(status_code=500, detail=f"Error creating assistant: {str(e)}")
+        
+        # Store model in database
+        with get_db() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT INTO custom_models (id, name, description, model_type, assistant_id, vector_store_id, config, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    model_id, 
+                    model.name, 
+                    model.description, 
+                    model.model_type,
+                    assistant_id,
+                    vector_store_id,
+                    json.dumps(config),
+                    now,
+                    now
+                )
             )
+            conn.commit()
+            
+        return CustomModelResponse(
+            id=model_id,
+            name=model.name,
+            description=model.description,
+            model_type=model.model_type,
+            instructions=model.instructions,
+            created_at=now,
+            updated_at=now
         )
-        conn.commit()
-    
-    return CustomModelResponse(
-        id=model_id,
-        name=model.name,
-        description=model.description,
-        model_type=model.model_type,
-        instructions=model.instructions,
-        created_at=now,
-        updated_at=now
-    )
+    except Exception as e:
+        logger.error(f"Error creating custom model: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/custom_models", response_model=List[CustomModelResponse])
 async def list_custom_models():
@@ -607,7 +616,7 @@ async def upload_file_to_model(
             conn.commit()
         
         return {"file_id": openai_file.id, "filename": file.filename}
-    
+        
     except Exception as e:
         logger.error(f"Error uploading file: {str(e)}")
         logger.error(traceback.format_exc())
@@ -756,6 +765,7 @@ async def extract_website_content(model_id: str, data: Dict[str, str]):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/health")
+@app.head("/api/health")
 async def health_check():
     """
     Health check endpoint to verify the API is running
@@ -803,6 +813,310 @@ async def get_available_models():
     except Exception as e:
         logger.error(f"Error getting models: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# Add these new imports
+from fastapi.responses import StreamingResponse
+from fastapi import Query, BackgroundTasks
+import asyncio
+from fastapi.staticfiles import StaticFiles
+import html
+import re
+
+# Add new model classes to support more features
+class AccessibilitySetting(BaseModel):
+    high_contrast: bool = False
+    large_text: bool = False
+    screen_reader_compatible: bool = False
+    language: str = "en"
+    reduced_motion: bool = False
+
+class TranslationRequest(BaseModel):
+    text: str
+    target_language: str
+
+class TextToSpeechRequest(BaseModel):
+    text: str
+    voice: Literal["alloy", "echo", "fable", "onyx", "nova", "shimmer"] = "alloy"
+    
+class FeedbackRequest(BaseModel):
+    conversation_id: str
+    rating: int
+    comments: Optional[str] = None
+    
+class ChatRequestV2(ChatRequest):
+    accessibility: Optional[AccessibilitySetting] = None
+    stream: bool = False
+    
+# Add after the other routes
+@app.post("/api/translate")
+async def translate_text(request: TranslationRequest):
+    """Translate text to the specified language"""
+    try:
+        # Call OpenAI to translate the text
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": f"You are a translator. Translate the text to {request.target_language}. Maintain the original formatting."},
+                {"role": "user", "content": request.text}
+            ],
+            temperature=0.3,
+            max_tokens=1000
+        )
+        
+        return {"translated_text": response.choices[0].message.content}
+    except Exception as e:
+        logger.error(f"Error translating text: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/text-to-speech")
+async def text_to_speech(request: TextToSpeechRequest):
+    """Convert text to speech for accessibility"""
+    try:
+        # Call OpenAI's TTS API to convert text to speech
+        audio_response = client.audio.speech.create(
+            model="tts-1",
+            voice=request.voice,
+            input=request.text
+        )
+        
+        # Stream the audio back to the client
+        return StreamingResponse(
+            audio_response.iter_bytes(chunk_size=4096),
+            media_type="audio/mpeg",
+            headers={"Content-Disposition": "attachment; filename=speech.mp3"}
+        )
+    except Exception as e:
+        logger.error(f"Error converting text to speech: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/chat/streaming")
+async def streaming_chat(request: ChatRequestV2):
+    """Chat with streaming response for better UX"""
+    try:
+        if not request.messages:
+            raise ValueError("No messages provided in the request")
+        
+        # Create system message based on purpose with accessibility options
+        system_content = f"You are a helpful AI assistant specialized in {request.purpose}. "
+        
+        # Add accessibility instructions if needed
+        if request.accessibility:
+            if request.accessibility.screen_reader_compatible:
+                system_content += "Format your response to be compatible with screen readers. Use proper headings, avoid ASCII art, and provide text alternatives. "
+            if request.accessibility.large_text:
+                system_content += "Keep your responses concise and well-structured for easy reading. "
+            
+            # Adjust language based on user preference
+            if request.accessibility.language != "en":
+                system_content += f"Respond in {request.accessibility.language}. "
+        
+        system_message = {"role": "system", "content": system_content}
+        
+        # Convert messages to OpenAI format
+        messages = [system_message] + [convert_to_openai_message(msg) for msg in request.messages]
+        
+        # Use streaming API for real-time responses
+        async def generate():
+            try:
+                stream = client.chat.completions.create(
+                    model="gpt-4o",
+                    messages=messages,  # type: ignore
+                    temperature=0.7,
+                    stream=True
+                )
+                
+                # Stream each chunk as it arrives
+                for chunk in stream:
+                    if chunk.choices and chunk.choices[0].delta.content:
+                        yield f"data: {json.dumps({'content': chunk.choices[0].delta.content})}\n\n"
+                    await asyncio.sleep(0.01)  # Small delay to prevent flooding
+                
+                yield f"data: {json.dumps({'done': True})}\n\n"
+            except Exception as e:
+                logger.error(f"Error in streaming: {str(e)}")
+                yield f"data: {json.dumps({'error': str(e)})}\n\n"
+        
+        return StreamingResponse(
+            generate(),
+            media_type="text/event-stream"
+        )
+        
+    except ValueError as e:
+        logger.error(f"Validation Error: {str(e)}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error in streaming chat endpoint: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/feedback")
+async def submit_feedback(request: FeedbackRequest, background_tasks: BackgroundTasks):
+    """Submit user feedback for an AI conversation"""
+    try:
+        # Record feedback in the database
+        with get_db() as conn:
+            cursor = conn.cursor()
+            
+            # Create feedback table if it doesn't exist
+            cursor.execute('''
+            CREATE TABLE IF NOT EXISTS feedback (
+                id TEXT PRIMARY KEY,
+                conversation_id TEXT NOT NULL,
+                rating INTEGER NOT NULL,
+                comments TEXT,
+                created_at TEXT NOT NULL
+            )
+            ''')
+            
+            # Insert new feedback
+            feedback_id = str(uuid.uuid4())
+            now = datetime.now().isoformat()
+            
+            cursor.execute(
+                "INSERT INTO feedback (id, conversation_id, rating, comments, created_at) VALUES (?, ?, ?, ?, ?)",
+                (feedback_id, request.conversation_id, request.rating, request.comments, now)
+            )
+            conn.commit()
+            
+        # Schedule analysis of feedback (runs in background)
+        background_tasks.add_task(analyze_feedback, request)
+        
+        return {"status": "success", "message": "Feedback submitted successfully"}
+    except Exception as e:
+        logger.error(f"Error submitting feedback: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+async def analyze_feedback(feedback: FeedbackRequest):
+    """Analyze feedback for system improvement (runs in background)"""
+    try:
+        # If rating is low, analyze comments for improvement
+        if feedback.rating < 3 and feedback.comments:
+            # Use OpenAI to analyze feedback
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are a feedback analysis assistant. Extract the main issues from user feedback to help improve the AI chatbot system."},
+                    {"role": "user", "content": f"User rating: {feedback.rating}/5\nFeedback: {feedback.comments}"}
+                ],
+                temperature=0.3,
+                max_tokens=150
+            )
+            
+            analysis = response.choices[0].message.content
+            
+            # Store analysis in database
+            with get_db() as conn:
+                cursor = conn.cursor()
+                
+                # Create feedback_analysis table if it doesn't exist
+                cursor.execute('''
+                CREATE TABLE IF NOT EXISTS feedback_analysis (
+                    feedback_id TEXT PRIMARY KEY,
+                    analysis TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    FOREIGN KEY (feedback_id) REFERENCES feedback (id)
+                )
+                ''')
+                
+                # Insert analysis
+                now = datetime.now().isoformat()
+                cursor.execute(
+                    "INSERT INTO feedback_analysis (feedback_id, analysis, created_at) VALUES (?, ?, ?)",
+                    (feedback.conversation_id, analysis, now)
+                )
+                conn.commit()
+            
+            logger.info(f"Feedback analysis completed for conversation {feedback.conversation_id}")
+    except Exception as e:
+        logger.error(f"Error analyzing feedback: {str(e)}")
+
+@app.get("/api/chat/suggestions/{topic}")
+async def get_chat_suggestions(topic: str):
+    """Get suggested chat starters for a specific topic"""
+    try:
+        # Use OpenAI to generate relevant question suggestions
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a helpful AI assistant. Generate 5 interesting, engaging and specific questions that a user might want to ask about the given topic. Return them as a simple list, one per line."},
+                {"role": "user", "content": f"Generate 5 interesting questions about: {topic}"}
+            ],
+            temperature=0.7,
+            max_tokens=200
+        )
+        
+        # Parse the response to extract questions
+        raw_suggestions = response.choices[0].message.content or ""
+        
+        # Split by newlines and clean up
+        suggestions = [
+            q.strip().strip('*-0123456789.') for q in raw_suggestions.split('\n')
+            if q.strip() and not q.isspace()
+        ]
+        
+        # Filter empty lines and limit to 5
+        suggestions = [q for q in suggestions if q][:5]
+        
+        return {"suggestions": suggestions}
+    except Exception as e:
+        logger.error(f"Error generating chat suggestions: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/summarize")
+async def summarize_text(text: str = Query(..., min_length=50)):
+    """Summarize long text for easier consumption"""
+    try:
+        if len(text) < 50:
+            return {"summary": text}
+            
+        # Call OpenAI to summarize the text
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a summarization assistant. Create a concise summary of the text, highlighting the key points."},
+                {"role": "user", "content": text}
+            ],
+            temperature=0.3,
+            max_tokens=300
+        )
+        
+        return {"summary": response.choices[0].message.content}
+    except Exception as e:
+        logger.error(f"Error summarizing text: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Enhance chat with audio transcription
+@app.post("/api/transcribe")
+async def transcribe_audio(file: UploadFile = File(...)):
+    """Transcribe audio file to text using OpenAI's Whisper API"""
+    temp_file_path = None
+    try:
+        # Create a temporary file
+        content = await file.read()
+        temp_file_fd, temp_file_path = tempfile.mkstemp(suffix=".mp3")
+        
+        # Write the file content
+        with os.fdopen(temp_file_fd, "wb") as temp_file:
+            temp_file.write(content)
+        
+        # Use OpenAI's Audio API to transcribe
+        with open(temp_file_path, "rb") as audio_file:
+            transcript = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file
+            )
+        
+        # Return the transcribed text
+        return {"text": transcript.text}
+    
+    except Exception as e:
+        logger.error(f"Error transcribing audio: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+    finally:
+        # Clean up the temporary file
+        if temp_file_path and os.path.exists(temp_file_path):
+            os.remove(temp_file_path)
 
 # Add this code at the end of the file
 if __name__ == "__main__":

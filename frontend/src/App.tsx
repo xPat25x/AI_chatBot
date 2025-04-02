@@ -22,9 +22,6 @@ import { API_BASE_URL, purposes } from './constants';
 import ChatMessageList from './components/ChatMessageList';
 import ChatInput from './components/ChatInput';
 import AppHeader from './components/AppHeader';
-import CreateModelDialog from './components/dialogs/CreateModelDialog';
-import FileUploadDialog from './components/dialogs/FileUploadDialog';
-import AddWebsiteDialog from './components/dialogs/AddWebsiteDialog';
 
 function App() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -216,6 +213,21 @@ function App() {
     setNewModelInstructions('');
   };
 
+  const handleFileUpload = useCallback(async (file: File) => {
+    try {
+      // Create form data
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('model_id', selectedModelId || '');
+      
+      const response = await axios.post(`${API_BASE_URL}/api/upload_file`, formData);
+      showSnackbar(`File uploaded successfully: ${response.data.filename}`, 'success');
+    } catch (error: any) {
+      console.error('Error uploading file:', error);
+      showSnackbar('Failed to upload file', 'error');
+    }
+  }, [selectedModelId]);
+
   return (
     <Container 
       maxWidth="md" 
@@ -225,7 +237,9 @@ function App() {
         flexDirection: 'column', 
         p: { xs: 0 },
         overflow: 'hidden',
-        bgcolor: 'background.default'
+        bgcolor: '#f8f9fa',
+        backgroundImage: 'none',
+        color: '#343a40'
       }}
     >
       <AppHeader
@@ -242,26 +256,40 @@ function App() {
         display: 'flex', 
         flexDirection: 'column', 
         position: 'relative',
-        overflow: 'hidden' 
+        overflow: 'hidden',
+        backdropFilter: 'none',
+        padding: '16px'
       }}>
         <Paper 
-          elevation={0} 
+          elevation={1} 
           sx={{ 
             flexGrow: 1, 
             display: 'flex', 
             flexDirection: 'column',
             overflow: 'hidden',
-            borderRadius: 0,
-            bgcolor: 'transparent',
-            border: 'none'
+            borderRadius: '12px',
+            bgcolor: 'white',
+            border: '1px solid rgba(0, 0, 0, 0.08)',
+            boxShadow: '0 2px 12px rgba(0, 0, 0, 0.06)'
           }}
         >
           <ChatMessageList 
-            messages={messages} 
-            loading={loading} 
+            messages={messages}
+            loading={loading}
             messagesEndRef={messagesEndRef} 
           />
-          <ChatInput onSend={handleSend} loading={loading} />
+          <ChatInput 
+            onSendMessage={handleSend} 
+            isLoading={loading}
+            onFileUpload={handleFileUpload}
+            accessibilitySettings={{
+              highContrast: false,
+              largeText: false,
+              screenReaderCompatible: false,
+              language: 'no',
+              reducedMotion: false
+            }}
+          />
         </Paper>
         
         <Fab 
@@ -270,13 +298,15 @@ function App() {
           onClick={() => setModelDialogOpen(true)}
           sx={{ 
             position: 'absolute', 
-            bottom: 16, 
-            right: 16,
-            boxShadow: '0 4px 12px rgba(26, 115, 232, 0.35)',
+            bottom: 24, 
+            right: 24,
+            background: '#4361ee',
+            boxShadow: '0 3px 8px rgba(67, 97, 238, 0.3)',
             '&:hover': {
-              boxShadow: '0 6px 16px rgba(26, 115, 232, 0.45)',
+              background: '#3a56d4',
+              boxShadow: '0 4px 10px rgba(67, 97, 238, 0.4)',
             },
-            transition: 'box-shadow 0.2s ease-in-out'
+            transition: 'all 0.2s ease-in-out'
           }}
         >
           <AddIcon />
@@ -289,10 +319,12 @@ function App() {
         maxWidth="sm" 
         fullWidth
         PaperProps={{
-          elevation: 3,
+          elevation: 2,
           sx: {
             borderRadius: 2,
-            overflow: 'hidden'
+            overflow: 'hidden',
+            background: 'white',
+            boxShadow: '0 4px 20px rgba(0, 0, 0, 0.1)'
           }
         }}
       >
